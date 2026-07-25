@@ -35,6 +35,9 @@ test("server-renders the delivery platform shell", async () => {
   assert.doesNotMatch(html, developmentPreviewMeta);
   assert.match(html, /<title>统一交付平台<\/title>/i);
   assert.match(html, /GitLab CI 统一发布入口/);
+  assert.match(html, /上线单申请/);
+  assert.match(html, /提交上线申请/);
+  assert.match(html, /打包部署执行台/);
   assert.match(html, /一键打包全部/);
   assert.match(html, /后端一键打包/);
   assert.match(html, /前端一键打包/);
@@ -61,4 +64,6 @@ test("removes starter preview wiring", async () => {
   assert.match(css, /pipeline-strip/);
   assert.match(css, /package-lanes/);
   assert.match(css, /dependency-configs/);
+  assert.match(css, /application-toolbar/);
+  assert.match(css, /execution-note/);
 });

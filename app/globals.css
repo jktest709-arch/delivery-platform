@@ -365,19 +365,31 @@ h3 {
 
 .release-toolbar {
   display: grid;
-  grid-template-columns: minmax(120px, 150px) repeat(5, minmax(118px, 1fr));
+  grid-template-columns: repeat(4, minmax(118px, 1fr));
   gap: 10px;
   align-items: end;
   margin-bottom: 12px;
 }
 
-.release-toolbar label,
+.application-toolbar label,
 .line-config label {
   display: grid;
   gap: 6px;
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
+}
+
+.execution-note {
+  margin-bottom: 12px;
+  border: 1px solid #c7d7fe;
+  border-radius: 8px;
+  background: #f5f8ff;
+  color: #32508a;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
 }
 
 .release-toolbar button,
@@ -546,6 +558,42 @@ button.primary:hover:not(:disabled) {
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 8px;
+}
+
+.application-toolbar {
+  display: grid;
+  grid-template-columns: minmax(118px, 150px) minmax(150px, 0.7fr) minmax(220px, 1fr) minmax(136px, auto);
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 14px;
+  border: 1px solid #e3e7ee;
+  border-radius: 8px;
+  background: #fbfcff;
+  padding: 12px;
+}
+
+.application-summary {
+  display: grid;
+  gap: 5px;
+  min-height: 52px;
+  align-content: center;
+}
+
+.application-summary strong {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.application-summary span {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.application-toolbar button {
+  padding: 0 14px;
+  font-weight: 800;
 }
 
 .table-head,
@@ -721,6 +769,7 @@ button.primary:hover:not(:disabled) {
   }
 
   .release-toolbar,
+  .application-toolbar,
   .line-config,
   .dependency-config {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -743,6 +792,7 @@ button.primary:hover:not(:disabled) {
 
   .pipeline-strip,
   .release-toolbar,
+  .application-toolbar,
   .line-config,
   .dependency-config,
   .package-lanes {

@@ -546,8 +546,8 @@ export default function Home() {
         <section className="panel release-panel" aria-labelledby="release-title">
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">发布编排</p>
-              <h2 id="release-title">上线单</h2>
+              <p className="eyebrow">发布执行</p>
+              <h2 id="release-title">打包部署执行台</h2>
             </div>
             <div className="release-metrics" aria-label="发布状态">
               <span>{selectedProjects.length} 个项目</span>
@@ -556,22 +556,12 @@ export default function Home() {
             </div>
           </div>
 
+          <div className="execution-note">
+            当前执行批次 PRD-{RELEASE_DATE}-{String(releaseNo).padStart(3, "0")}
+            ，来源于下方上线单申请；这里只处理统一 tag、打包和部署。
+          </div>
+
           <div className="release-toolbar">
-            <label>
-              发布序号
-              <input
-                aria-label="发布序号"
-                min="1"
-                onChange={(event) =>
-                  setReleaseNo(Math.max(1, Number(event.target.value) || 1))
-                }
-                type="number"
-                value={releaseNo}
-              />
-            </label>
-            <button onClick={submitRelease} type="button">
-              提交上线流程
-            </button>
             <button
               className="primary"
               disabled={!permissions.canTag || selectedProjects.length === 0}
@@ -681,13 +671,46 @@ export default function Home() {
       </section>
 
       <section className="workspace-grid">
-        <section className="panel project-panel" aria-labelledby="project-title">
+        <section className="panel project-panel application-panel" aria-labelledby="project-title">
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">项目入口</p>
+              <p className="eyebrow">上线单申请</p>
               <h2 id="project-title">选择项目、分支或 Commit</h2>
             </div>
-            <span className="count-pill">按配置顺序自动排序</span>
+            <span className="count-pill">申请提交入口</span>
+          </div>
+
+          <div className="application-toolbar">
+            <label>
+              发布序号
+              <input
+                aria-label="上线单发布序号"
+                min="1"
+                onChange={(event) =>
+                  setReleaseNo(Math.max(1, Number(event.target.value) || 1))
+                }
+                type="number"
+                value={releaseNo}
+              />
+            </label>
+            <div className="application-summary">
+              <strong>上线窗口</strong>
+              <span>{RELEASE_WINDOW}</span>
+            </div>
+            <div className="application-summary">
+              <strong>申请范围</strong>
+              <span>
+                {selectedProjects.length} 个项目，按配置顺序自动排序
+              </span>
+            </div>
+            <button
+              className="primary"
+              disabled={selectedProjects.length === 0}
+              onClick={submitRelease}
+              type="button"
+            >
+              提交上线申请
+            </button>
           </div>
 
           <div className="project-table" role="table" aria-label="项目选择表">
