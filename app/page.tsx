@@ -6,6 +6,13 @@ type SourceMode = "branch" | "tag" | "commit";
 type UserRole = "developer" | "releaseManager" | "admin";
 type ProjectKind = "backend" | "frontend";
 type PackageTarget = "all" | ProjectKind;
+type ReleaseHistoryStatus =
+  | "待审批"
+  | "打包中"
+  | "打包完成"
+  | "部署中"
+  | "部署成功"
+  | "部分失败";
 type ProjectStatus =
   | "待打包"
   | "打包中"
@@ -47,6 +54,34 @@ type GitLabRepoConfig = {
 type DependencyRule = {
   order: number;
   dependencies: string[];
+};
+
+type ReleaseHistoryProject = {
+  name: string;
+  kind: string;
+  source: string;
+  ref: string;
+  repo: string;
+  tag: string;
+  state: string;
+};
+
+type ReleaseHistoryRecord = {
+  id: string;
+  batchNo: string;
+  applicant: string;
+  approver: string;
+  status: ReleaseHistoryStatus;
+  window: string;
+  createdAt: string;
+  updatedAt: string;
+  projectCount: number;
+  backendCount: number;
+  frontendCount: number;
+  tagSummary: string;
+  summary: string;
+  timeline: string[];
+  projects: ReleaseHistoryProject[];
 };
 
 const RELEASE_DATE = "20260725";
@@ -305,6 +340,116 @@ const PACKAGE_TARGET_LABELS: Record<PackageTarget, string> = {
   frontend: "前端",
 };
 
+const INITIAL_RELEASE_HISTORY: ReleaseHistoryRecord[] = [
+  {
+    id: "PRD-20260725-041",
+    batchNo: "PRD-20260725-041",
+    applicant: "林辰",
+    approver: "周岚",
+    status: "部署成功",
+    window: "2026-07-24 21:00",
+    createdAt: "2026-07-24 18:12",
+    updatedAt: "2026-07-24 21:36",
+    projectCount: 4,
+    backendCount: 3,
+    frontendCount: 1,
+    tagSummary: "aaprd-20260724-041 / bbprd-20260724-041",
+    summary: "订单核心服务、支付网关、履约调度引擎、商家工作台",
+    timeline: [
+      "2026-07-24 21:36 生产部署完成，发布批次关闭。",
+      "2026-07-24 20:42 全量一键打包完成。",
+      "2026-07-24 18:12 开发提交上线申请。",
+    ],
+    projects: [
+      {
+        name: "订单核心服务",
+        kind: "后端",
+        source: "分支",
+        ref: "release/2026.07",
+        repo: "https://gitlab.corp/delivery/order-core",
+        tag: "aaprd-20260724-041",
+        state: "部署成功",
+      },
+      {
+        name: "支付网关",
+        kind: "后端",
+        source: "Commit",
+        ref: "9c2d19f",
+        repo: "https://gitlab.corp/delivery/pay-gateway",
+        tag: "aaprd-20260724-041",
+        state: "部署成功",
+      },
+      {
+        name: "履约调度引擎",
+        kind: "后端",
+        source: "分支",
+        ref: "release/2026.07",
+        repo: "https://gitlab.corp/delivery/dispatch-engine",
+        tag: "bbprd-20260724-041",
+        state: "部署成功",
+      },
+      {
+        name: "商家工作台",
+        kind: "前端",
+        source: "分支",
+        ref: "release/2026.07",
+        repo: "https://gitlab.corp/delivery/merchant-portal",
+        tag: "bbprd-20260724-041",
+        state: "部署成功",
+      },
+    ],
+  },
+  {
+    id: "PRD-20260723-040",
+    batchNo: "PRD-20260723-040",
+    applicant: "赵悦",
+    approver: "平台 SRE",
+    status: "部分失败",
+    window: "2026-07-23 22:00",
+    createdAt: "2026-07-23 17:40",
+    updatedAt: "2026-07-23 22:18",
+    projectCount: 3,
+    backendCount: 2,
+    frontendCount: 1,
+    tagSummary: "opsprd-20260723-040 / aaprd-20260723-040",
+    summary: "统一认证中心、移动端 BFF、运营报表中心",
+    timeline: [
+      "2026-07-23 22:18 运营报表中心部署失败，等待补发。",
+      "2026-07-23 21:20 后端打包完成。",
+      "2026-07-23 17:40 开发提交上线申请。",
+    ],
+    projects: [
+      {
+        name: "统一认证中心",
+        kind: "后端",
+        source: "Tag",
+        ref: "v2.18.0",
+        repo: "https://gitlab.corp/delivery/base-auth",
+        tag: "opsprd-20260723-040",
+        state: "部署成功",
+      },
+      {
+        name: "移动端 BFF",
+        kind: "后端",
+        source: "分支",
+        ref: "release/2026.07",
+        repo: "https://gitlab.corp/delivery/mobile-bff",
+        tag: "aaprd-20260723-040",
+        state: "部署成功",
+      },
+      {
+        name: "运营报表中心",
+        kind: "前端",
+        source: "Commit",
+        ref: "12ad7e0",
+        repo: "https://gitlab.corp/delivery/reporting",
+        tag: "opsprd-20260723-040",
+        state: "部署失败",
+      },
+    ],
+  },
+];
+
 function dependencyNames(projectId: string, rules: Record<string, DependencyRule>) {
   return rules[projectId].dependencies
     .map((id) => PROJECTS.find((item) => item.id === id)?.name)
@@ -322,6 +467,10 @@ export default function Home() {
   const [businessLines, setBusinessLines] = useState(INITIAL_LINES);
   const [repoConfigs, setRepoConfigs] = useState(INITIAL_REPO_CONFIGS);
   const [dependencyRules, setDependencyRules] = useState(INITIAL_DEPENDENCY_RULES);
+  const [releaseHistory, setReleaseHistory] = useState(INITIAL_RELEASE_HISTORY);
+  const [selectedHistoryId, setSelectedHistoryId] = useState(
+    INITIAL_RELEASE_HISTORY[0].id,
+  );
   const [activity, setActivity] = useState([
     "支付网关上一次 pipeline 在 package 阶段失败，已保留单项目重发入口。",
     "项目 GitLab 仓库地址由配置管理维护，上线单和执行台统一读取。",
@@ -357,6 +506,9 @@ export default function Home() {
   const buildReadyCount = selectedProjects.filter((project) =>
     ["打包成功", "部署中", "部署成功"].includes(statuses[project.id]),
   ).length;
+  const selectedHistory =
+    releaseHistory.find((record) => record.id === selectedHistoryId) ??
+    releaseHistory[0];
 
   function tagForProject(project: Project) {
     const config = businessLines[project.line];
@@ -431,9 +583,93 @@ export default function Home() {
     setActivity((current) => [message, ...current].slice(0, 5));
   }
 
+  function currentBatchNo() {
+    return `PRD-${RELEASE_DATE}-${String(releaseNo).padStart(3, "0")}`;
+  }
+
+  function nowLabel() {
+    return new Date().toLocaleString("zh-CN", {
+      hour12: false,
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  function historyProjects(
+    stateForProject?: (project: Project) => string,
+  ): ReleaseHistoryProject[] {
+    return selectedProjects.map((project) => ({
+      name: project.name,
+      kind: KIND_LABELS[project.kind],
+      source: SOURCE_LABELS[sources[project.id].mode],
+      ref: sources[project.id].ref,
+      repo: repoConfigs[project.id].gitlabUrl,
+      tag: tagForProject(project),
+      state: stateForProject?.(project) ?? statuses[project.id],
+    }));
+  }
+
+  function updateReleaseHistory(
+    status: ReleaseHistoryStatus,
+    timelineEntry: string,
+    stateForProject?: (project: Project) => string,
+  ) {
+    const batchNo = currentBatchNo();
+    const timestamp = nowLabel();
+    const projects = historyProjects(stateForProject);
+    const tagSummary =
+      Array.from(new Set(projects.map((project) => project.tag))).join(" / ") ||
+      "未生成 tag";
+    const nextRecord: ReleaseHistoryRecord = {
+      id: batchNo,
+      batchNo,
+      applicant: "林辰",
+      approver: "周岚",
+      status,
+      window: RELEASE_WINDOW,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      projectCount: selectedProjects.length,
+      backendCount: selectedBackendProjects.length,
+      frontendCount: selectedFrontendProjects.length,
+      tagSummary,
+      summary: projects.map((project) => project.name).join("、"),
+      timeline: [`${timestamp} ${timelineEntry}`],
+      projects,
+    };
+
+    setReleaseHistory((current) => {
+      const existing = current.find((record) => record.id === batchNo);
+      if (!existing) {
+        return [nextRecord, ...current].slice(0, 10);
+      }
+
+      return current.map((record) =>
+        record.id === batchNo
+          ? {
+              ...record,
+              ...nextRecord,
+              createdAt: record.createdAt,
+              timeline: [
+                `${timestamp} ${timelineEntry}`,
+                ...record.timeline,
+              ].slice(0, 8),
+            }
+          : record,
+      );
+    });
+    setSelectedHistoryId(batchNo);
+  }
+
   function submitRelease() {
     addActivity(
       `上线单已提交：${selectedProjects.length} 个项目，发布窗口 ${RELEASE_WINDOW}，打包顺序读取配置管理。`,
+    );
+    updateReleaseHistory(
+      "待审批",
+      `上线申请已提交，包含 ${selectedProjects.length} 个项目。`,
     );
   }
 
@@ -463,6 +699,11 @@ export default function Home() {
         "0",
       )}，${PACKAGE_TARGET_LABELS[target]}一键打包队列：${queueNames}，仓库地址读取 GitLab 配置。`,
     );
+    updateReleaseHistory(
+      "打包中",
+      `${PACKAGE_TARGET_LABELS[target]}一键打包已触发：${queueNames}。`,
+      (project) => (projectIds.includes(project.id) ? "打包中" : statuses[project.id]),
+    );
 
     projectIds.forEach((projectId, index) => {
       window.setTimeout(() => {
@@ -480,6 +721,15 @@ export default function Home() {
         }));
       }, index * 550 + 420);
     });
+
+    window.setTimeout(() => {
+      updateReleaseHistory(
+        "打包完成",
+        `${PACKAGE_TARGET_LABELS[target]}一键打包完成。`,
+        (project) =>
+          projectIds.includes(project.id) ? "打包成功" : statuses[project.id],
+      );
+    }, projectIds.length * 550 + 520);
   }
 
   function deployAll() {
@@ -490,6 +740,7 @@ export default function Home() {
       ...Object.fromEntries(projectIds.map((id) => [id, "部署中" as ProjectStatus])),
     }));
     addActivity("已触发生产部署，系统按配置管理里的依赖顺序串行推进 GitLab deploy jobs。");
+    updateReleaseHistory("部署中", "生产部署已触发。", () => "部署中");
     window.setTimeout(() => {
       setStatuses((current) => ({
         ...current,
@@ -497,6 +748,7 @@ export default function Home() {
           projectIds.map((id) => [id, "部署成功" as ProjectStatus]),
         ),
       }));
+      updateReleaseHistory("部署成功", "生产部署完成。", () => "部署成功");
     }, 700);
   }
 
@@ -509,17 +761,32 @@ export default function Home() {
       addActivity(
         `${project.name} 已单独触发打包 job：${repoConfigs[project.id].packageJob}。`,
       );
+      updateReleaseHistory(
+        "打包完成",
+        `${project.name} 单项目打包完成。`,
+        (item) => (item.id === projectId ? "打包成功" : statuses[item.id]),
+      );
       return;
     }
 
     if (action === "deploy") {
       setStatuses((current) => ({ ...current, [projectId]: "部署成功" }));
       addActivity(`${project.name} 已单独触发部署，用于补发或灰度后重放。`);
+      updateReleaseHistory(
+        "部署成功",
+        `${project.name} 单项目部署完成。`,
+        (item) => (item.id === projectId ? "部署成功" : statuses[item.id]),
+      );
       return;
     }
 
     setStatuses((current) => ({ ...current, [projectId]: "重新排队" }));
     addActivity(`${project.name} 已按原始 ref 重新排队，保留同一个发布 tag。`);
+    updateReleaseHistory(
+      "打包中",
+      `${project.name} 单项目重发已排队。`,
+      (item) => (item.id === projectId ? "重新排队" : statuses[item.id]),
+    );
     window.setTimeout(() => {
       setStatuses((current) => ({ ...current, [projectId]: "打包成功" }));
     }, 600);
@@ -985,6 +1252,104 @@ export default function Home() {
             ))}
           </div>
         </section>
+      </section>
+
+      <section className="panel history-panel" aria-labelledby="history-title">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">发布历史</p>
+            <h2 id="history-title">上线批次记录</h2>
+          </div>
+          <div className="release-metrics" aria-label="历史统计">
+            <span>{releaseHistory.length} 个批次</span>
+            <span>{releaseHistory[0]?.status ?? "暂无记录"}</span>
+          </div>
+        </div>
+
+        <div className="history-layout">
+          <div className="history-list" aria-label="发布历史列表">
+            <div className="history-head">
+              <span>批次</span>
+              <span>状态</span>
+              <span>项目</span>
+              <span>更新时间</span>
+            </div>
+            {releaseHistory.map((record) => (
+              <button
+                className={record.id === selectedHistory.id ? "history-row is-active" : "history-row"}
+                key={record.id}
+                onClick={() => setSelectedHistoryId(record.id)}
+                type="button"
+              >
+                <span>
+                  <strong>{record.batchNo}</strong>
+                  <small>{record.window}</small>
+                </span>
+                <em data-status={record.status}>{record.status}</em>
+                <span>{record.projectCount} 个</span>
+                <span>{record.updatedAt}</span>
+              </button>
+            ))}
+          </div>
+
+          <aside className="history-detail" aria-label="发布历史详情">
+            <div className="history-detail-top">
+              <div>
+                <h3>{selectedHistory.batchNo}</h3>
+                <p>{selectedHistory.summary}</p>
+              </div>
+              <em data-status={selectedHistory.status}>{selectedHistory.status}</em>
+            </div>
+
+            <div className="history-facts">
+              <div>
+                <span>发起人</span>
+                <strong>{selectedHistory.applicant}</strong>
+              </div>
+              <div>
+                <span>审批人</span>
+                <strong>{selectedHistory.approver}</strong>
+              </div>
+              <div>
+                <span>项目分布</span>
+                <strong>
+                  后端 {selectedHistory.backendCount} / 前端 {selectedHistory.frontendCount}
+                </strong>
+              </div>
+              <div>
+                <span>Tag</span>
+                <strong>{selectedHistory.tagSummary}</strong>
+              </div>
+            </div>
+
+            <div className="history-project-table">
+              <div className="history-project-head">
+                <span>项目</span>
+                <span>来源</span>
+                <span>Tag</span>
+                <span>状态</span>
+              </div>
+              {selectedHistory.projects.map((project) => (
+                <div className="history-project-row" key={`${selectedHistory.id}-${project.name}`}>
+                  <span>
+                    <strong>{project.name}</strong>
+                    <small>{project.kind} · {project.repo}</small>
+                  </span>
+                  <span>{project.source}: {project.ref}</span>
+                  <span>{project.tag}</span>
+                  <em>{project.state}</em>
+                </div>
+              ))}
+            </div>
+
+            <div className="history-timeline">
+              <h3>时间线</h3>
+              {selectedHistory.timeline.map((item) => (
+                <p key={item}>{item}</p>
+              ))}
+            </div>
+          </aside>
+        </div>
       </section>
     </main>
   );

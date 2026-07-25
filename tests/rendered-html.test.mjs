@@ -42,6 +42,10 @@ test("server-renders the delivery platform shell", async () => {
   assert.match(html, /后端一键打包/);
   assert.match(html, /前端一键打包/);
   assert.match(html, /选择项目、分支或 Commit/);
+  assert.match(html, /发布历史/);
+  assert.match(html, /上线批次记录/);
+  assert.match(html, /PRD-20260725-041/);
+  assert.match(html, /历史详情|发布历史详情/);
   assert.match(html, /GitLab、Tag 与依赖/);
   assert.match(html, /GitLab 仓库配置/);
   assert.match(html, /https:\/\/gitlab\.corp\/delivery\/order-core/);
@@ -71,4 +75,7 @@ test("removes starter preview wiring", async () => {
   assert.match(css, /execution-note/);
   assert.match(css, /repo-configs/);
   assert.match(css, /repo-fields/);
+  assert.match(css, /history-panel/);
+  assert.match(css, /history-layout/);
+  assert.match(css, /history-project-table/);
 });
