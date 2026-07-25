@@ -1,30 +1,103 @@
 # 统一交付平台
 
-基于 GitLab CI 发布流程的多项目统一交付工作台。首版聚焦发布编排体验，覆盖上线申请、项目选择、GitLab 仓库配置、业务线 tag 前缀、依赖顺序配置、统一打 tag、一键打包、发布历史、单项目部署和用户权限展示。
+基于 GitLab CI 的私有化交付平台。当前版本已从前端状态原型重构为前后端工程：Go 后端负责权限、配置、上线单、发布历史和 GitLab API 编排；Vue 管理台负责上线申请、统一打 tag、一键打包、单项目重试和配置管理。
 
-## 当前能力
+## 技术栈
 
-- 上线单申请：在申请页里选择需要上线的项目，并为每个项目指定分支、tag 或 commit 后提交。
-- GitLab 仓库配置：为每个项目维护仓库地址、GitLab Project ID、默认分支和打包 Job。
-- 业务线 tag 配置：不同平台可维护独立生产 tag 前缀，例如 `aaprd`、`bbprd`。
-- 依赖顺序配置：管理员预先维护项目打包顺序和前置依赖，发布申请只读取配置。
-- 一键打包：发布经理或管理员可统一打 tag，并按配置顺序自动打包。
-- 前后端分组打包：同一发布页面内支持全量、后端、前端三种一键打包队列。
-- 发布历史：记录历史批次、项目快照、tag、状态、发起人、审批人和操作时间线。
-- 单项目操作：每个已选项目支持单独打包、部署和重发，适合失败重试或补发。
-- 简单权限模型：开发、发布经理、管理员三类角色对应不同操作能力。
+- 后端：Go、Gin、GORM、JWT，按 go-admin 常见后台工程分层组织。
+- 前端：Vue 3、Vite、TypeScript，作为 go-admin-ui 风格的管理台二开入口。
+- 数据库：本地默认 SQLite，私有化部署默认 MySQL 8.4。
+- GitLab：后端统一托管 GitLab Token，支持 dry-run 和真实 API 模式。
+- 部署：Docker Compose，包含 MySQL、后端 API、前端 Nginx。
 
-## 本地运行
+## 项目结构
 
-```bash
-npm install
-npm run dev
-npm run build
+```text
+backend/        Go API 服务，包含数据模型、接口、GitLab 客户端和发布编排
+frontend/       Vue 管理台，调用后端 API，不再使用浏览器临时状态
+deploy/         Nginx 配置和环境变量示例
+docs/           架构与接口说明
+app/            早期 Next/Vinext 交互原型，保留作页面参考
 ```
 
-## 后续接入建议
+## 本地开发
 
-- 将项目、GitLab 仓库、业务线、用户、发布历史与依赖关系持久化到数据库。
-- 接入 GitLab API：创建 tag、触发 pipeline、读取 job 状态与日志。
-- 将“提交上线申请”改为真实审批流，并记录操作审计。
-- 按环境扩展前缀模板，例如 `sit`、`uat`、`prd`。
+当前机器需要先安装 Go 1.22+。
+
+```bash
+# 1. 启动后端，默认 SQLite + GitLab dry-run
+cd backend
+go mod tidy
+go run ./cmd/server
+
+# 2. 另开终端启动前端
+cd frontend
+npm install
+npm run dev
+```
+
+打开 `http://localhost:5173`。
+
+默认账号：
+
+```text
+admin / admin123       管理员
+release / release123   发布经理
+dev / dev123           开发
+```
+
+## 私有化部署
+
+```bash
+cp deploy/.env.example .env
+
+# 按需修改 .env：
+# JWT_SECRET=强随机字符串
+# GITLAB_BASE_URL=https://gitlab.your-company.com
+# GITLAB_TOKEN=你的 GitLab Token
+# GITLAB_DRY_RUN=true
+
+docker compose up --build -d
+```
+
+部署完成后访问 `http://服务器IP:8088`。后端健康检查为 `http://服务器IP:8088/healthz`。
+
+企业内网如果拦截 HTTPS，Docker 构建时可能出现 Go/npm 依赖下载证书错误。处理方式是给 Docker 构建环境导入企业根证书，或指定可访问的 Go 代理：
+
+```bash
+docker compose build --build-arg GOPROXY=https://goproxy.cn,direct backend
+docker compose up -d
+```
+
+## GitLab 真实模式
+
+默认 `GITLAB_DRY_RUN=true`，点击统一打 tag、打包、部署时只会写入平台数据库，不会调用真实 GitLab。
+
+切换真实模式：
+
+```text
+GITLAB_DRY_RUN=false
+GITLAB_BASE_URL=https://gitlab.your-company.com
+GITLAB_TOKEN=<Personal Access Token 或 Project Access Token>
+```
+
+Token 至少需要具备创建 tag、触发 pipeline 的权限。项目配置里的 `GitLab Project ID` 支持数字 ID，也支持 `group/project` 路径。
+
+## 当前功能
+
+- 上线单申请：开发选择项目，并为每个项目指定分支、tag 或 commit。
+- 项目配置：维护 GitLab 地址、Project ID、默认分支、打包 Job、部署 Job。
+- 业务线配置：维护平台、tag 前缀和 tag 模板。
+- 依赖顺序配置：管理员预先配置项目顺序和依赖关系。
+- 统一打 tag：对上线单内项目按业务线生成生产 tag。
+- 一键打包：支持全量、后端、前端三种队列。
+- 单项目操作：支持单项目打包和部署，用于失败重试或补发。
+- 发布历史：持久化记录批次、项目、tag、pipeline、操作时间线。
+- 用户权限：内置开发、发布经理、管理员三类角色。
+
+## 后续建议
+
+- 接入完整 go-admin 菜单、Casbin 策略和操作日志表。
+- 增加审批流节点：提交、审批、打包、部署、关闭。
+- 增加 GitLab pipeline 状态轮询任务和失败日志抓取。
+- 增加 LDAP/OIDC 登录，用企业账号替换内置账号。

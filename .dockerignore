@@ -1,0 +1,12 @@
+.git
+.next
+.vinext
+dist
+node_modules
+frontend/node_modules
+frontend/dist
+.wrangler
+.env
+backend/data
+outputs
+work

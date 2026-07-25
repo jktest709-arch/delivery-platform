@@ -1,0 +1,55 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: delivery-platform-mysql
+    environment:
+      MYSQL_DATABASE: delivery_platform
+      MYSQL_USER: delivery
+      MYSQL_PASSWORD: delivery
+      MYSQL_ROOT_PASSWORD: delivery-root
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-udelivery", "-pdelivery"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./backend
+    container_name: delivery-platform-api
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      HTTP_ADDR: :8080
+      DB_DRIVER: mysql
+      DB_DSN: delivery:delivery@tcp(mysql:3306)/delivery_platform?charset=utf8mb4&parseTime=True&loc=Local
+      JWT_SECRET: ${JWT_SECRET:-please-change-this-secret}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8088}
+      GITLAB_BASE_URL: ${GITLAB_BASE_URL:-https://gitlab.example.com}
+      GITLAB_TOKEN: ${GITLAB_TOKEN:-}
+      GITLAB_DRY_RUN: ${GITLAB_DRY_RUN:-true}
+      TZ: Asia/Shanghai
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: /api
+    container_name: delivery-platform-web
+    depends_on:
+      - backend
+    ports:
+      - "8088:80"
+
+volumes:
+  mysql-data:
