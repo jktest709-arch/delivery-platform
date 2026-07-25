@@ -18,11 +18,9 @@ type ProjectStatus =
 type Project = {
   id: string;
   name: string;
-  repo: string;
   line: string;
   kind: ProjectKind;
   owner: string;
-  pipeline: string;
 };
 
 type SourceSelection = {
@@ -39,6 +37,13 @@ type BusinessLineConfig = {
   approver: string;
 };
 
+type GitLabRepoConfig = {
+  gitlabUrl: string;
+  projectId: string;
+  defaultBranch: string;
+  packageJob: string;
+};
+
 type DependencyRule = {
   order: number;
   dependencies: string[];
@@ -51,65 +56,51 @@ const PROJECTS: Project[] = [
   {
     id: "base-auth",
     name: "统一认证中心",
-    repo: "gitlab.corp/delivery/base-auth",
     line: "ops",
     kind: "backend",
     owner: "平台组",
-    pipeline: "build-auth-prd",
   },
   {
     id: "order-core",
     name: "订单核心服务",
-    repo: "gitlab.corp/delivery/order-core",
     line: "aa",
     kind: "backend",
     owner: "交易组",
-    pipeline: "build-order-prd",
   },
   {
     id: "pay-gateway",
     name: "支付网关",
-    repo: "gitlab.corp/delivery/pay-gateway",
     line: "aa",
     kind: "backend",
     owner: "支付组",
-    pipeline: "build-pay-prd",
   },
   {
     id: "dispatch-engine",
     name: "履约调度引擎",
-    repo: "gitlab.corp/delivery/dispatch-engine",
     line: "bb",
     kind: "backend",
     owner: "履约组",
-    pipeline: "build-dispatch-prd",
   },
   {
     id: "merchant-portal",
     name: "商家工作台",
-    repo: "gitlab.corp/delivery/merchant-portal",
     line: "bb",
     kind: "frontend",
     owner: "商家组",
-    pipeline: "build-portal-prd",
   },
   {
     id: "mobile-bff",
     name: "移动端 BFF",
-    repo: "gitlab.corp/delivery/mobile-bff",
     line: "aa",
     kind: "backend",
     owner: "无线组",
-    pipeline: "build-mobile-prd",
   },
   {
     id: "reporting",
     name: "运营报表中心",
-    repo: "gitlab.corp/delivery/reporting",
     line: "ops",
     kind: "frontend",
     owner: "数据组",
-    pipeline: "build-report-prd",
   },
 ];
 
@@ -141,6 +132,51 @@ const INITIAL_DEPENDENCY_RULES: Record<string, DependencyRule> = {
   reporting: {
     order: 70,
     dependencies: ["order-core", "dispatch-engine"],
+  },
+};
+
+const INITIAL_REPO_CONFIGS: Record<string, GitLabRepoConfig> = {
+  "base-auth": {
+    gitlabUrl: "https://gitlab.corp/delivery/base-auth",
+    projectId: "delivery/base-auth",
+    defaultBranch: "master",
+    packageJob: "build-auth-prd",
+  },
+  "order-core": {
+    gitlabUrl: "https://gitlab.corp/delivery/order-core",
+    projectId: "delivery/order-core",
+    defaultBranch: "master",
+    packageJob: "build-order-prd",
+  },
+  "pay-gateway": {
+    gitlabUrl: "https://gitlab.corp/delivery/pay-gateway",
+    projectId: "delivery/pay-gateway",
+    defaultBranch: "master",
+    packageJob: "build-pay-prd",
+  },
+  "dispatch-engine": {
+    gitlabUrl: "https://gitlab.corp/delivery/dispatch-engine",
+    projectId: "delivery/dispatch-engine",
+    defaultBranch: "master",
+    packageJob: "build-dispatch-prd",
+  },
+  "merchant-portal": {
+    gitlabUrl: "https://gitlab.corp/delivery/merchant-portal",
+    projectId: "delivery/merchant-portal",
+    defaultBranch: "main",
+    packageJob: "build-portal-prd",
+  },
+  "mobile-bff": {
+    gitlabUrl: "https://gitlab.corp/delivery/mobile-bff",
+    projectId: "delivery/mobile-bff",
+    defaultBranch: "master",
+    packageJob: "build-mobile-prd",
+  },
+  reporting: {
+    gitlabUrl: "https://gitlab.corp/delivery/reporting",
+    projectId: "delivery/reporting",
+    defaultBranch: "main",
+    packageJob: "build-report-prd",
   },
 };
 
@@ -284,9 +320,11 @@ export default function Home() {
   const [sources, setSources] = useState(INITIAL_SOURCES);
   const [statuses, setStatuses] = useState(INITIAL_STATUS);
   const [businessLines, setBusinessLines] = useState(INITIAL_LINES);
+  const [repoConfigs, setRepoConfigs] = useState(INITIAL_REPO_CONFIGS);
   const [dependencyRules, setDependencyRules] = useState(INITIAL_DEPENDENCY_RULES);
   const [activity, setActivity] = useState([
     "支付网关上一次 pipeline 在 package 阶段失败，已保留单项目重发入口。",
+    "项目 GitLab 仓库地址由配置管理维护，上线单和执行台统一读取。",
     "打包依赖顺序由配置管理维护，发布申请只选择项目和代码来源。",
     "开发已提交 6 个项目的上线申请，等待发布经理一键打 tag 并打包。",
   ]);
@@ -351,6 +389,20 @@ export default function Home() {
     }));
   }
 
+  function updateRepoConfig(
+    projectId: string,
+    field: keyof GitLabRepoConfig,
+    value: string,
+  ) {
+    setRepoConfigs((current) => ({
+      ...current,
+      [projectId]: {
+        ...current[projectId],
+        [field]: value,
+      },
+    }));
+  }
+
   function updateDependencyOrder(projectId: string, order: number) {
     setDependencyRules((current) => ({
       ...current,
@@ -409,7 +461,7 @@ export default function Home() {
       `已创建统一 tag 批次 PRD-${RELEASE_DATE}-${String(releaseNo).padStart(
         3,
         "0",
-      )}，${PACKAGE_TARGET_LABELS[target]}一键打包队列：${queueNames}。`,
+      )}，${PACKAGE_TARGET_LABELS[target]}一键打包队列：${queueNames}，仓库地址读取 GitLab 配置。`,
     );
 
     projectIds.forEach((projectId, index) => {
@@ -454,7 +506,9 @@ export default function Home() {
 
     if (action === "build") {
       setStatuses((current) => ({ ...current, [projectId]: "打包成功" }));
-      addActivity(`${project.name} 已单独触发打包 job：${project.pipeline}。`);
+      addActivity(
+        `${project.name} 已单独触发打包 job：${repoConfigs[project.id].packageJob}。`,
+      );
       return;
     }
 
@@ -624,7 +678,7 @@ export default function Home() {
                   <div className="project-title-row">
                     <div>
                       <h3>{project.name}</h3>
-                      <p>{project.repo}</p>
+                      <p>{repoConfigs[project.id].gitlabUrl}</p>
                     </div>
                     <span className={`status ${statusTone[statuses[project.id]]}`}>
                       {statuses[project.id]}
@@ -633,6 +687,7 @@ export default function Home() {
                   <div className="project-meta">
                     <span>{businessLines[project.line].platform}</span>
                     <span>{KIND_LABELS[project.kind]}</span>
+                    <span>GitLab ID: {repoConfigs[project.id].projectId}</span>
                     <span>固定顺序: {dependencyRules[project.id].order}</span>
                     <span>{SOURCE_LABELS[sources[project.id].mode]}: {sources[project.id].ref}</span>
                     <span>Tag: {tagForProject(project)}</span>
@@ -735,6 +790,7 @@ export default function Home() {
                       <small>
                         {project.owner} · 固定顺序 {dependencyRules[project.id].order}
                       </small>
+                      <small>{repoConfigs[project.id].gitlabUrl}</small>
                     </span>
                   </label>
                   <select
@@ -770,9 +826,69 @@ export default function Home() {
           <div className="panel-heading">
             <div>
               <p className="eyebrow">配置管理</p>
-              <h2 id="settings-title">Tag 与依赖顺序</h2>
+              <h2 id="settings-title">GitLab、Tag 与依赖</h2>
             </div>
             <span className="count-pill">{permissions.canManage ? "可编辑" : "展示模式"}</span>
+          </div>
+
+          <div className="repo-configs" aria-label="GitLab 仓库配置">
+            <div className="config-title-row">
+              <div>
+                <h3>GitLab 仓库配置</h3>
+                <p>维护项目对应的仓库地址、项目 ID、默认分支和打包 Job。</p>
+              </div>
+              <span>{PROJECTS.length} 个仓库</span>
+            </div>
+            {PROJECTS.map((project) => (
+              <div className="repo-config" key={project.id}>
+                <div>
+                  <strong>{project.name}</strong>
+                  <span>{KIND_LABELS[project.kind]} · {project.id}</span>
+                </div>
+                <div className="repo-fields">
+                  <label>
+                    GitLab 仓库地址
+                    <input
+                      disabled={!permissions.canManage}
+                      onChange={(event) =>
+                        updateRepoConfig(project.id, "gitlabUrl", event.target.value)
+                      }
+                      value={repoConfigs[project.id].gitlabUrl}
+                    />
+                  </label>
+                  <label>
+                    GitLab Project ID
+                    <input
+                      disabled={!permissions.canManage}
+                      onChange={(event) =>
+                        updateRepoConfig(project.id, "projectId", event.target.value)
+                      }
+                      value={repoConfigs[project.id].projectId}
+                    />
+                  </label>
+                  <label>
+                    默认分支
+                    <input
+                      disabled={!permissions.canManage}
+                      onChange={(event) =>
+                        updateRepoConfig(project.id, "defaultBranch", event.target.value)
+                      }
+                      value={repoConfigs[project.id].defaultBranch}
+                    />
+                  </label>
+                  <label>
+                    打包 Job
+                    <input
+                      disabled={!permissions.canManage}
+                      onChange={(event) =>
+                        updateRepoConfig(project.id, "packageJob", event.target.value)
+                      }
+                      value={repoConfigs[project.id].packageJob}
+                    />
+                  </label>
+                </div>
+              </div>
+            ))}
           </div>
 
           <div className="line-configs">
