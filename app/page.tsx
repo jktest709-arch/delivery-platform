@@ -4,11 +4,13 @@ import { useMemo, useState } from "react";
 
 type SourceMode = "branch" | "tag" | "commit";
 type UserRole = "developer" | "releaseManager" | "admin";
+type ProjectKind = "backend" | "frontend";
+type PackageTarget = "all" | ProjectKind;
 type ProjectStatus =
-  | "待构建"
-  | "构建中"
-  | "构建成功"
-  | "构建失败"
+  | "待打包"
+  | "打包中"
+  | "打包成功"
+  | "打包失败"
   | "部署中"
   | "部署成功"
   | "重新排队";
@@ -18,9 +20,8 @@ type Project = {
   name: string;
   repo: string;
   line: string;
+  kind: ProjectKind;
   owner: string;
-  order: number;
-  dependencies: string[];
   pipeline: string;
 };
 
@@ -38,6 +39,11 @@ type BusinessLineConfig = {
   approver: string;
 };
 
+type DependencyRule = {
+  order: number;
+  dependencies: string[];
+};
+
 const RELEASE_DATE = "20260725";
 const RELEASE_WINDOW = "2026-07-25 21:00";
 
@@ -47,9 +53,8 @@ const PROJECTS: Project[] = [
     name: "统一认证中心",
     repo: "gitlab.corp/delivery/base-auth",
     line: "ops",
+    kind: "backend",
     owner: "平台组",
-    order: 10,
-    dependencies: [],
     pipeline: "build-auth-prd",
   },
   {
@@ -57,9 +62,8 @@ const PROJECTS: Project[] = [
     name: "订单核心服务",
     repo: "gitlab.corp/delivery/order-core",
     line: "aa",
+    kind: "backend",
     owner: "交易组",
-    order: 20,
-    dependencies: ["base-auth"],
     pipeline: "build-order-prd",
   },
   {
@@ -67,9 +71,8 @@ const PROJECTS: Project[] = [
     name: "支付网关",
     repo: "gitlab.corp/delivery/pay-gateway",
     line: "aa",
+    kind: "backend",
     owner: "支付组",
-    order: 30,
-    dependencies: ["base-auth", "order-core"],
     pipeline: "build-pay-prd",
   },
   {
@@ -77,9 +80,8 @@ const PROJECTS: Project[] = [
     name: "履约调度引擎",
     repo: "gitlab.corp/delivery/dispatch-engine",
     line: "bb",
+    kind: "backend",
     owner: "履约组",
-    order: 40,
-    dependencies: ["order-core"],
     pipeline: "build-dispatch-prd",
   },
   {
@@ -87,9 +89,8 @@ const PROJECTS: Project[] = [
     name: "商家工作台",
     repo: "gitlab.corp/delivery/merchant-portal",
     line: "bb",
+    kind: "frontend",
     owner: "商家组",
-    order: 50,
-    dependencies: ["dispatch-engine"],
     pipeline: "build-portal-prd",
   },
   {
@@ -97,9 +98,8 @@ const PROJECTS: Project[] = [
     name: "移动端 BFF",
     repo: "gitlab.corp/delivery/mobile-bff",
     line: "aa",
+    kind: "backend",
     owner: "无线组",
-    order: 60,
-    dependencies: ["order-core", "pay-gateway"],
     pipeline: "build-mobile-prd",
   },
   {
@@ -107,12 +107,42 @@ const PROJECTS: Project[] = [
     name: "运营报表中心",
     repo: "gitlab.corp/delivery/reporting",
     line: "ops",
+    kind: "frontend",
     owner: "数据组",
-    order: 70,
-    dependencies: ["order-core", "dispatch-engine"],
     pipeline: "build-report-prd",
   },
 ];
+
+const INITIAL_DEPENDENCY_RULES: Record<string, DependencyRule> = {
+  "base-auth": {
+    order: 10,
+    dependencies: [],
+  },
+  "order-core": {
+    order: 20,
+    dependencies: ["base-auth"],
+  },
+  "pay-gateway": {
+    order: 30,
+    dependencies: ["base-auth", "order-core"],
+  },
+  "dispatch-engine": {
+    order: 40,
+    dependencies: ["order-core"],
+  },
+  "merchant-portal": {
+    order: 50,
+    dependencies: ["dispatch-engine"],
+  },
+  "mobile-bff": {
+    order: 60,
+    dependencies: ["order-core", "pay-gateway"],
+  },
+  reporting: {
+    order: 70,
+    dependencies: ["order-core", "dispatch-engine"],
+  },
+};
 
 const INITIAL_LINES: Record<string, BusinessLineConfig> = {
   aa: {
@@ -162,11 +192,11 @@ const ROLE_POLICIES: Record<
   },
   releaseManager: {
     label: "发布经理",
-    description: "可统一打 tag、触发构建和执行生产部署。",
+    description: "可统一打 tag、触发打包和执行生产部署。",
     canTag: true,
     canDeploy: true,
     canManage: false,
-    privileges: ["审核上线单", "统一打 tag", "触发构建", "生产部署"],
+    privileges: ["审核上线单", "统一打 tag", "触发打包", "生产部署"],
   },
   admin: {
     label: "管理员",
@@ -189,6 +219,7 @@ const INITIAL_SELECTED = [
   "order-core",
   "pay-gateway",
   "dispatch-engine",
+  "merchant-portal",
   "mobile-bff",
 ];
 
@@ -205,7 +236,7 @@ const INITIAL_SOURCES: Record<string, SourceSelection> = PROJECTS.reduce(
 
 const INITIAL_STATUS: Record<string, ProjectStatus> = PROJECTS.reduce(
   (acc, project) => {
-    acc[project.id] = project.id === "pay-gateway" ? "构建失败" : "待构建";
+    acc[project.id] = project.id === "pay-gateway" ? "打包失败" : "待打包";
     return acc;
   },
   {} as Record<string, ProjectStatus>,
@@ -218,17 +249,28 @@ const SOURCE_LABELS: Record<SourceMode, string> = {
 };
 
 const statusTone: Record<ProjectStatus, string> = {
-  待构建: "neutral",
-  构建中: "info",
-  构建成功: "success",
-  构建失败: "danger",
+  待打包: "neutral",
+  打包中: "info",
+  打包成功: "success",
+  打包失败: "danger",
   部署中: "info",
   部署成功: "success",
   重新排队: "warning",
 };
 
-function dependencyNames(project: Project) {
-  return project.dependencies
+const KIND_LABELS: Record<ProjectKind, string> = {
+  backend: "后端",
+  frontend: "前端",
+};
+
+const PACKAGE_TARGET_LABELS: Record<PackageTarget, string> = {
+  all: "全量",
+  backend: "后端",
+  frontend: "前端",
+};
+
+function dependencyNames(projectId: string, rules: Record<string, DependencyRule>) {
+  return rules[projectId].dependencies
     .map((id) => PROJECTS.find((item) => item.id === id)?.name)
     .filter(Boolean)
     .join("、");
@@ -242,30 +284,40 @@ export default function Home() {
   const [sources, setSources] = useState(INITIAL_SOURCES);
   const [statuses, setStatuses] = useState(INITIAL_STATUS);
   const [businessLines, setBusinessLines] = useState(INITIAL_LINES);
+  const [dependencyRules, setDependencyRules] = useState(INITIAL_DEPENDENCY_RULES);
   const [activity, setActivity] = useState([
     "支付网关上一次 pipeline 在 package 阶段失败，已保留单项目重发入口。",
-    "系统按预设依赖顺序完成排序：认证 -> 订单 -> 支付 -> 履约 -> BFF。",
-    "开发已提交 5 个项目的上线申请，等待发布经理统一打 tag。",
+    "打包依赖顺序由配置管理维护，发布申请只选择项目和代码来源。",
+    "开发已提交 6 个项目的上线申请，等待发布经理一键打 tag 并打包。",
   ]);
 
   const permissions = ROLE_POLICIES[currentRole];
   const selectedProjects = useMemo(
     () =>
       PROJECTS.filter((project) => selectedProjectIds.includes(project.id)).sort(
-        (a, b) => a.order - b.order,
+        (a, b) => dependencyRules[a.id].order - dependencyRules[b.id].order,
       ),
-    [selectedProjectIds],
+    [dependencyRules, selectedProjectIds],
+  );
+
+  const selectedBackendProjects = selectedProjects.filter(
+    (project) => project.kind === "backend",
+  );
+  const selectedFrontendProjects = selectedProjects.filter(
+    (project) => project.kind === "frontend",
   );
 
   const dependencyWarnings = selectedProjects.filter((project) =>
-    project.dependencies.some((dependency) => !selectedProjectIds.includes(dependency)),
+    dependencyRules[project.id].dependencies.some(
+      (dependency) => !selectedProjectIds.includes(dependency),
+    ),
   );
 
   const completedCount = selectedProjects.filter(
     (project) => statuses[project.id] === "部署成功",
   ).length;
   const buildReadyCount = selectedProjects.filter((project) =>
-    ["构建成功", "部署中", "部署成功"].includes(statuses[project.id]),
+    ["打包成功", "部署中", "部署成功"].includes(statuses[project.id]),
   ).length;
 
   function tagForProject(project: Project) {
@@ -299,37 +351,83 @@ export default function Home() {
     }));
   }
 
+  function updateDependencyOrder(projectId: string, order: number) {
+    setDependencyRules((current) => ({
+      ...current,
+      [projectId]: {
+        ...current[projectId],
+        order,
+      },
+    }));
+  }
+
+  function updateDependencyList(projectId: string, value: string) {
+    const dependencies = value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    setDependencyRules((current) => ({
+      ...current,
+      [projectId]: {
+        ...current[projectId],
+        dependencies,
+      },
+    }));
+  }
+
   function addActivity(message: string) {
     setActivity((current) => [message, ...current].slice(0, 5));
   }
 
   function submitRelease() {
     addActivity(
-      `上线单已提交：${selectedProjects.length} 个项目，发布窗口 ${RELEASE_WINDOW}。`,
+      `上线单已提交：${selectedProjects.length} 个项目，发布窗口 ${RELEASE_WINDOW}，打包顺序读取配置管理。`,
     );
   }
 
-  function buildAll() {
-    if (!permissions.canTag || selectedProjects.length === 0) return;
-    const projectIds = selectedProjects.map((project) => project.id);
+  function packageProjects(target: PackageTarget) {
+    const projects =
+      target === "all"
+        ? selectedProjects
+        : selectedProjects.filter((project) => project.kind === target);
+
+    if (!permissions.canTag || projects.length === 0) return;
+
+    const projectIds = projects.map((project) => project.id);
+    const queueNames = projects.map((project) => project.name).join(" -> ");
+
     setStatuses((current) => ({
       ...current,
-      ...Object.fromEntries(projectIds.map((id) => [id, "构建中" as ProjectStatus])),
+      ...Object.fromEntries(
+        projectIds.map((id, index) => [
+          id,
+          index === 0 ? "打包中" : ("重新排队" as ProjectStatus),
+        ]),
+      ),
     }));
     addActivity(
-      `已创建统一发布批次 PRD-${RELEASE_DATE}-${String(releaseNo).padStart(
+      `已创建统一 tag 批次 PRD-${RELEASE_DATE}-${String(releaseNo).padStart(
         3,
         "0",
-      )}，并按业务线前缀创建项目 tag。`,
+      )}，${PACKAGE_TARGET_LABELS[target]}一键打包队列：${queueNames}。`,
     );
-    window.setTimeout(() => {
-      setStatuses((current) => ({
-        ...current,
-        ...Object.fromEntries(
-          projectIds.map((id) => [id, "构建成功" as ProjectStatus]),
-        ),
-      }));
-    }, 700);
+
+    projectIds.forEach((projectId, index) => {
+      window.setTimeout(() => {
+        setStatuses((current) => ({
+          ...current,
+          ...(index > 0 ? { [projectIds[index - 1]]: "打包成功" as ProjectStatus } : {}),
+          [projectId]: "打包中",
+        }));
+      }, index * 550);
+
+      window.setTimeout(() => {
+        setStatuses((current) => ({
+          ...current,
+          [projectId]: "打包成功",
+        }));
+      }, index * 550 + 420);
+    });
   }
 
   function deployAll() {
@@ -339,7 +437,7 @@ export default function Home() {
       ...current,
       ...Object.fromEntries(projectIds.map((id) => [id, "部署中" as ProjectStatus])),
     }));
-    addActivity("已触发生产部署，系统按依赖顺序串行推进 GitLab deploy jobs。");
+    addActivity("已触发生产部署，系统按配置管理里的依赖顺序串行推进 GitLab deploy jobs。");
     window.setTimeout(() => {
       setStatuses((current) => ({
         ...current,
@@ -355,8 +453,8 @@ export default function Home() {
     if (!project) return;
 
     if (action === "build") {
-      setStatuses((current) => ({ ...current, [projectId]: "构建成功" }));
-      addActivity(`${project.name} 已单独触发构建 job：${project.pipeline}。`);
+      setStatuses((current) => ({ ...current, [projectId]: "打包成功" }));
+      addActivity(`${project.name} 已单独触发打包 job：${project.pipeline}。`);
       return;
     }
 
@@ -369,7 +467,7 @@ export default function Home() {
     setStatuses((current) => ({ ...current, [projectId]: "重新排队" }));
     addActivity(`${project.name} 已按原始 ref 重新排队，保留同一个发布 tag。`);
     window.setTimeout(() => {
-      setStatuses((current) => ({ ...current, [projectId]: "构建成功" }));
+      setStatuses((current) => ({ ...current, [projectId]: "打包成功" }));
     }, 600);
   }
 
@@ -380,7 +478,7 @@ export default function Home() {
           <p className="eyebrow">GitLab CI 统一发布入口</p>
           <h1 id="platform-title">统一交付平台</h1>
           <p className="summary">
-            从上线申请、项目依赖排序、统一 tag、构建到部署，集中管理多项目生产发布。
+            从上线申请、固定依赖配置、统一 tag、一键打包到部署，集中管理多项目生产发布。
           </p>
         </div>
         <div className="release-card" aria-label="当前发布批次">
@@ -391,7 +489,7 @@ export default function Home() {
       </section>
 
       <section className="pipeline-strip" aria-label="上线流程">
-        {["上线申请", "依赖排序", "统一打 Tag", "GitLab 构建", "生产部署"].map(
+        {["上线申请", "依赖配置", "统一打 Tag", "一键打包", "生产部署"].map(
           (step, index) => (
             <div className="pipeline-step" key={step}>
               <span>{index + 1}</span>
@@ -453,7 +551,7 @@ export default function Home() {
             </div>
             <div className="release-metrics" aria-label="发布状态">
               <span>{selectedProjects.length} 个项目</span>
-              <span>{buildReadyCount} 个已构建</span>
+              <span>{buildReadyCount} 个已打包</span>
               <span>{completedCount} 个已部署</span>
             </div>
           </div>
@@ -477,10 +575,24 @@ export default function Home() {
             <button
               className="primary"
               disabled={!permissions.canTag || selectedProjects.length === 0}
-              onClick={buildAll}
+              onClick={() => packageProjects("all")}
               type="button"
             >
-              统一打 Tag 并构建
+              一键打包全部
+            </button>
+            <button
+              disabled={!permissions.canTag || selectedBackendProjects.length === 0}
+              onClick={() => packageProjects("backend")}
+              type="button"
+            >
+              后端一键打包
+            </button>
+            <button
+              disabled={!permissions.canTag || selectedFrontendProjects.length === 0}
+              onClick={() => packageProjects("frontend")}
+              type="button"
+            >
+              前端一键打包
             </button>
             <button
               disabled={!permissions.canDeploy || selectedProjects.length === 0}
@@ -494,7 +606,24 @@ export default function Home() {
           <div className="dependency-alert" data-state={dependencyWarnings.length > 0 ? "warn" : "ok"}>
             {dependencyWarnings.length > 0
               ? `有 ${dependencyWarnings.length} 个项目缺少预设依赖，建议补选后再发布。`
-              : "依赖检查通过，系统已按预设顺序排序。"}
+              : "依赖检查通过，系统已读取配置管理中的固定打包顺序。"}
+          </div>
+
+          <div className="package-lanes" aria-label="前后端打包队列">
+            <div>
+              <strong>后端队列</strong>
+              <span>
+                {selectedBackendProjects.map((project) => project.name).join(" -> ") ||
+                  "未选择后端项目"}
+              </span>
+            </div>
+            <div>
+              <strong>前端队列</strong>
+              <span>
+                {selectedFrontendProjects.map((project) => project.name).join(" -> ") ||
+                  "未选择前端项目"}
+              </span>
+            </div>
           </div>
 
           <div className="ordered-list" aria-label="已选项目发布顺序">
@@ -513,11 +642,13 @@ export default function Home() {
                   </div>
                   <div className="project-meta">
                     <span>{businessLines[project.line].platform}</span>
+                    <span>{KIND_LABELS[project.kind]}</span>
+                    <span>固定顺序: {dependencyRules[project.id].order}</span>
                     <span>{SOURCE_LABELS[sources[project.id].mode]}: {sources[project.id].ref}</span>
                     <span>Tag: {tagForProject(project)}</span>
                   </div>
                   <div className="dependency-line">
-                    依赖: {dependencyNames(project) || "无前置项目"}
+                    依赖: {dependencyNames(project.id, dependencyRules) || "无前置项目"}
                   </div>
                 </div>
                 <div className="row-actions" aria-label={`${project.name} 单项目操作`}>
@@ -526,7 +657,7 @@ export default function Home() {
                     onClick={() => runProjectAction(project.id, "build")}
                     type="button"
                   >
-                    构建
+                    打包
                   </button>
                   <button
                     disabled={!permissions.canDeploy}
@@ -556,7 +687,7 @@ export default function Home() {
               <p className="eyebrow">项目入口</p>
               <h2 id="project-title">选择项目、分支或 Commit</h2>
             </div>
-            <span className="count-pill">按 order 自动排序</span>
+            <span className="count-pill">按配置顺序自动排序</span>
           </div>
 
           <div className="project-table" role="table" aria-label="项目选择表">
@@ -564,7 +695,7 @@ export default function Home() {
               <span>项目</span>
               <span>来源</span>
               <span>引用值</span>
-              <span>业务线</span>
+              <span>类型 / 业务线</span>
             </div>
             {PROJECTS.map((project) => {
               const checked = selectedProjectIds.includes(project.id);
@@ -578,7 +709,9 @@ export default function Home() {
                     />
                     <span>
                       <strong>{project.name}</strong>
-                      <small>{project.owner} · order {project.order}</small>
+                      <small>
+                        {project.owner} · 固定顺序 {dependencyRules[project.id].order}
+                      </small>
                     </span>
                   </label>
                   <select
@@ -601,7 +734,9 @@ export default function Home() {
                     }
                     value={sources[project.id].ref}
                   />
-                  <span>{businessLines[project.line].name}</span>
+                  <span>
+                    {KIND_LABELS[project.kind]} · {businessLines[project.line].name}
+                  </span>
                 </div>
               );
             })}
@@ -611,8 +746,8 @@ export default function Home() {
         <section className="panel settings-panel" aria-labelledby="settings-title">
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">业务线管理</p>
-              <h2 id="settings-title">Tag 前缀配置</h2>
+              <p className="eyebrow">配置管理</p>
+              <h2 id="settings-title">Tag 与依赖顺序</h2>
             </div>
             <span className="count-pill">{permissions.canManage ? "可编辑" : "展示模式"}</span>
           </div>
@@ -656,6 +791,52 @@ export default function Home() {
                 </label>
               </div>
             ))}
+          </div>
+
+          <div className="dependency-configs" aria-label="项目打包依赖顺序配置">
+            <div className="config-title-row">
+              <div>
+                <h3>项目打包依赖管理</h3>
+                <p>管理员预先维护，发布申请只读取这里的顺序和依赖。</p>
+              </div>
+              <span>{PROJECTS.length} 个项目</span>
+            </div>
+            {[...PROJECTS]
+              .sort((a, b) => dependencyRules[a.id].order - dependencyRules[b.id].order)
+              .map((project) => (
+                <div className="dependency-config" key={project.id}>
+                  <div>
+                    <strong>{project.name}</strong>
+                    <span>{KIND_LABELS[project.kind]} · {project.id}</span>
+                  </div>
+                  <label>
+                    顺序
+                    <input
+                      disabled={!permissions.canManage}
+                      min="1"
+                      onChange={(event) =>
+                        updateDependencyOrder(
+                          project.id,
+                          Math.max(1, Number(event.target.value) || 1),
+                        )
+                      }
+                      type="number"
+                      value={dependencyRules[project.id].order}
+                    />
+                  </label>
+                  <label>
+                    前置依赖 ID
+                    <input
+                      disabled={!permissions.canManage}
+                      onChange={(event) =>
+                        updateDependencyList(project.id, event.target.value)
+                      }
+                      placeholder="base-auth, order-core"
+                      value={dependencyRules[project.id].dependencies.join(", ")}
+                    />
+                  </label>
+                </div>
+              ))}
           </div>
 
           <div className="activity-feed" aria-label="操作记录">

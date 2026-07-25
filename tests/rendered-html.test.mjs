@@ -35,10 +35,14 @@ test("server-renders the delivery platform shell", async () => {
   assert.doesNotMatch(html, developmentPreviewMeta);
   assert.match(html, /<title>统一交付平台<\/title>/i);
   assert.match(html, /GitLab CI 统一发布入口/);
-  assert.match(html, /统一打 Tag 并构建/);
+  assert.match(html, /一键打包全部/);
+  assert.match(html, /后端一键打包/);
+  assert.match(html, /前端一键打包/);
   assert.match(html, /选择项目、分支或 Commit/);
-  assert.match(html, /Tag 前缀配置/);
+  assert.match(html, /Tag 与依赖顺序/);
+  assert.match(html, /项目打包依赖管理/);
   assert.match(html, /订单核心服务/);
+  assert.match(html, /固定顺序:\s*(?:<!-- -->)?20/);
   assert.match(html, /aaprd-20260725-042/);
 });
 
@@ -55,4 +59,6 @@ test("removes starter preview wiring", async () => {
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.match(css, /delivery-shell/);
   assert.match(css, /pipeline-strip/);
+  assert.match(css, /package-lanes/);
+  assert.match(css, /dependency-configs/);
 });

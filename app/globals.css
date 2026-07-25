@@ -365,7 +365,7 @@ h3 {
 
 .release-toolbar {
   display: grid;
-  grid-template-columns: minmax(120px, 150px) repeat(3, minmax(126px, auto));
+  grid-template-columns: minmax(120px, 150px) repeat(5, minmax(118px, 1fr));
   gap: 10px;
   align-items: end;
   margin-bottom: 12px;
@@ -411,6 +411,35 @@ button.primary:hover:not(:disabled) {
   border-color: #fedf89;
   background: var(--amber-bg);
   color: var(--amber);
+}
+
+.package-lanes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.package-lanes div {
+  display: grid;
+  gap: 6px;
+  min-height: 70px;
+  align-content: start;
+  border: 1px solid #e3e7ee;
+  border-radius: 8px;
+  background: #fbfcff;
+  padding: 12px;
+}
+
+.package-lanes strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.package-lanes span {
+  color: #405168;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .ordered-list {
@@ -602,6 +631,61 @@ button.primary:hover:not(:disabled) {
   font-size: 12px;
 }
 
+.dependency-configs {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+  border-top: 1px solid #edf0f5;
+  padding-top: 14px;
+}
+
+.config-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.config-title-row p {
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.config-title-row span {
+  flex: 0 0 auto;
+  color: #32508a;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.dependency-config {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.75fr) minmax(78px, 0.35fr) minmax(190px, 1fr);
+  gap: 10px;
+  align-items: end;
+  border: 1px solid #e3e7ee;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.dependency-config > div span {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dependency-config label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .activity-feed {
   margin-top: 16px;
   border-top: 1px solid #edf0f5;
@@ -637,7 +721,8 @@ button.primary:hover:not(:disabled) {
   }
 
   .release-toolbar,
-  .line-config {
+  .line-config,
+  .dependency-config {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -658,7 +743,9 @@ button.primary:hover:not(:disabled) {
 
   .pipeline-strip,
   .release-toolbar,
-  .line-config {
+  .line-config,
+  .dependency-config,
+  .package-lanes {
     grid-template-columns: 1fr;
   }
 

@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "统一交付平台",
-  description: "基于 GitLab CI 的多项目统一发布、构建与部署工作台。",
+  description: "基于 GitLab CI 的多项目统一发布、打包与部署工作台。",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",
