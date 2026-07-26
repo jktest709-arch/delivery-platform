@@ -17,12 +17,16 @@ func NewRouter(cfg config.Config, db *gorm.DB, releaseService *release.Service) 
 
 	router := gin.New()
 	router.Use(gin.Logger(), gin.Recovery())
-	router.Use(cors.New(cors.Config{
-		AllowOrigins:     cfg.CORSOrigins,
-		AllowMethods:     []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions},
-		AllowHeaders:     []string{"Authorization", "Content-Type"},
-		AllowCredentials: true,
-	}))
+	corsConfig := cors.Config{
+		AllowMethods: []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions},
+		AllowHeaders: []string{"Authorization", "Content-Type"},
+	}
+	if cfg.CORSAllowAll {
+		corsConfig.AllowAllOrigins = true
+	} else {
+		corsConfig.AllowOrigins = cfg.CORSOrigins
+	}
+	router.Use(cors.New(corsConfig))
 
 	handler := Handler{
 		cfg:            cfg,

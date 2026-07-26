@@ -31,7 +31,7 @@ services:
       DB_DRIVER: mysql
       DB_DSN: delivery:delivery@tcp(mysql:3306)/delivery_platform?charset=utf8mb4&parseTime=True&loc=Local
       JWT_SECRET: ${JWT_SECRET:-please-change-this-secret}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
       GITLAB_BASE_URL: ${GITLAB_BASE_URL:-https://gitlab.example.com}
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
       GITLAB_DRY_RUN: ${GITLAB_DRY_RUN:-true}

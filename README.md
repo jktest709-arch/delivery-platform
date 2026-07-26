@@ -67,7 +67,7 @@ docker compose up --build -d
 
 ```text
 WEB_PORT=18080
-CORS_ORIGINS=http://服务器IP:18080,http://localhost:18080
+CORS_ORIGINS=*
 ```
 
 `WEB_PORT` 是宿主机对外访问端口；`HTTP_ADDR` 是后端容器内部监听地址，通常保持 `:8080` 即可。修改 `.env` 后需要重新创建容器：

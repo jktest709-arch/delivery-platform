@@ -12,6 +12,7 @@ type Config struct {
 	DBDSN         string
 	JWTSecret     string
 	CORSOrigins   []string
+	CORSAllowAll  bool
 	GitLabBaseURL string
 	GitLabToken   string
 	GitLabDryRun  bool
@@ -24,13 +25,16 @@ func Load() Config {
 		dbDSN = "delivery:delivery@tcp(mysql:3306)/delivery_platform?charset=utf8mb4&parseTime=True&loc=Local"
 	}
 
+	corsOrigins := splitEnv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+
 	return Config{
 		Env:           env("APP_ENV", "local"),
 		HTTPAddr:      env("HTTP_ADDR", ":8080"),
 		DBDriver:      dbDriver,
 		DBDSN:         dbDSN,
 		JWTSecret:     env("JWT_SECRET", "please-change-this-secret"),
-		CORSOrigins:   splitEnv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"),
+		CORSOrigins:   corsOrigins,
+		CORSAllowAll:  contains(corsOrigins, "*"),
 		GitLabBaseURL: strings.TrimRight(env("GITLAB_BASE_URL", "https://gitlab.example.com"), "/"),
 		GitLabToken:   os.Getenv("GITLAB_TOKEN"),
 		GitLabDryRun:  boolEnv("GITLAB_DRY_RUN", true),
@@ -62,4 +66,13 @@ func boolEnv(key string, fallback bool) bool {
 		return fallback
 	}
 	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

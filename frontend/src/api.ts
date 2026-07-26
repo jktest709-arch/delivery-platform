@@ -7,7 +7,7 @@ import type {
   User,
 } from "./types";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8080/api";
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 const TOKEN_KEY = "delivery-platform-token";
 
 export function getToken() {
