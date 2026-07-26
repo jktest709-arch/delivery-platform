@@ -53,6 +53,7 @@ cp deploy/.env.example .env
 
 # 按需修改 .env：
 # JWT_SECRET=强随机字符串
+# WEB_PORT=8080
 # GITLAB_BASE_URL=https://gitlab.your-company.com
 # GITLAB_TOKEN=你的 GitLab Token
 # GITLAB_DRY_RUN=true
@@ -61,6 +62,20 @@ docker compose up --build -d
 ```
 
 部署完成后访问 `http://服务器IP:8080`。后端健康检查为 `http://服务器IP:8080/healthz`。
+
+如果希望改成 `18080` 访问，不要只改 `HTTP_ADDR`，而是这样配置：
+
+```text
+WEB_PORT=18080
+CORS_ORIGINS=http://服务器IP:18080,http://localhost:18080
+```
+
+`WEB_PORT` 是宿主机对外访问端口；`HTTP_ADDR` 是后端容器内部监听地址，通常保持 `:8080` 即可。修改 `.env` 后需要重新创建容器：
+
+```bash
+docker compose down
+docker compose up --build -d
+```
 
 企业内网如果拦截 HTTPS，Docker 构建时可能出现 Go/npm 依赖下载证书错误。处理方式是给 Docker 构建环境导入企业根证书，或指定可访问的 Go 代理：
 

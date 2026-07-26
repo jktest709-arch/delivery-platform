@@ -11,7 +11,8 @@ RUN npm run build
 
 FROM nginx:1.27-alpine
 
-COPY deploy/nginx/default.conf /etc/nginx/conf.d/default.conf
+ENV BACKEND_UPSTREAM=backend:8080
+COPY deploy/nginx/default.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=builder /src/dist /usr/share/nginx/html
 
 EXPOSE 80
