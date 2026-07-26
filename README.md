@@ -38,6 +38,30 @@ npm run dev
 
 打开 `http://localhost:5173`。
 
+## 自动化测试
+
+```bash
+# 后端接口契约和单元测试
+cd backend
+go test ./...
+
+# 前端构建和组件测试
+cd frontend
+npm ci
+npm run build
+npm run test
+
+# 登录和主页面冒烟 E2E
+npx playwright install chromium
+npm run test:e2e
+```
+
+当前测试覆盖：
+
+- `/api/projects` 契约：`dependencies` 必须返回数组，不能返回 `null`。
+- 前端登录后渲染：接口返回 `dependencies: null` 时不能白屏。
+- E2E 冒烟：`admin/admin123` 登录后切换所有主页面，浏览器不能出现运行时错误。
+
 默认账号：
 
 ```text

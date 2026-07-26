@@ -42,6 +42,8 @@ yarn-error.log*
 next-env.d.ts
 /dist/
 /frontend/dist/
+/frontend/playwright-report/
+/frontend/test-results/
 /.wrangler/
 /outputs/
 /work/
