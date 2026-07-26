@@ -36,7 +36,7 @@ export type Project = {
   deployJob: string;
   sortOrder: number;
   enabled: boolean;
-  dependencies: string[];
+  dependencies: string[] | null;
 };
 
 export type ReleaseProject = {

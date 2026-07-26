@@ -313,6 +313,9 @@ func (h Handler) projectsWithDependencies() ([]projectDTO, error) {
 	result := make([]projectDTO, 0, len(projects))
 	for _, project := range projects {
 		dependencies := depMap[project.ID]
+		if dependencies == nil {
+			dependencies = []string{}
+		}
 		sort.Strings(dependencies)
 		result = append(result, projectDTO{
 			Project:          project,

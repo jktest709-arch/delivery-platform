@@ -147,7 +147,7 @@ function syncProjectState(projectResult: Project[]) {
   const activeCodes = new Set(projectResult.map((project) => project.code));
   for (const project of projectResult) {
     projectSourceForm(project);
-    dependencyText[project.code] = project.dependencies.join(",");
+    dependencyText[project.code] = projectDependencies(project).join(",");
   }
   for (const code of Object.keys(sourceForms)) {
     if (!activeCodes.has(code)) {
@@ -174,6 +174,10 @@ function projectSourceForm(project: Project): SourceForm {
     };
   }
   return sourceForms[project.code];
+}
+
+function projectDependencies(project: Project) {
+  return Array.isArray(project.dependencies) ? project.dependencies : [];
 }
 
 function toggleProject(code: string) {
