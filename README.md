@@ -60,7 +60,7 @@ cp deploy/.env.example .env
 docker compose up --build -d
 ```
 
-部署完成后访问 `http://服务器IP:8088`。后端健康检查为 `http://服务器IP:8088/healthz`。
+部署完成后访问 `http://服务器IP:8080`。后端健康检查为 `http://服务器IP:8080/healthz`。
 
 企业内网如果拦截 HTTPS，Docker 构建时可能出现 Go/npm 依赖下载证书错误。处理方式是给 Docker 构建环境导入企业根证书，或指定可访问的 Go 代理：
 

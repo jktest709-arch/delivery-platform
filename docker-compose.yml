@@ -31,13 +31,13 @@ services:
       DB_DRIVER: mysql
       DB_DSN: delivery:delivery@tcp(mysql:3306)/delivery_platform?charset=utf8mb4&parseTime=True&loc=Local
       JWT_SECRET: ${JWT_SECRET:-please-change-this-secret}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8088}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
       GITLAB_BASE_URL: ${GITLAB_BASE_URL:-https://gitlab.example.com}
       GITLAB_TOKEN: ${GITLAB_TOKEN:-}
       GITLAB_DRY_RUN: ${GITLAB_DRY_RUN:-true}
       TZ: Asia/Shanghai
-    ports:
-      - "8080:8080"
+    expose:
+      - "8080"
 
   frontend:
     build:
@@ -49,7 +49,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "8088:80"
+      - "8080:80"
 
 volumes:
   mysql-data:
