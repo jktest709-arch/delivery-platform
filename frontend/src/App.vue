@@ -63,8 +63,13 @@ const releaseForm = reactive({
   remark: "",
 });
 
+type SourceForm = {
+  sourceType: SourceType;
+  sourceRef: string;
+};
+
 const selectedProjectCodes = ref<string[]>([]);
-const sourceForms = reactive<Record<string, { sourceType: SourceType; sourceRef: string }>>({});
+const sourceForms = reactive<Record<string, SourceForm>>({});
 const dependencyText = reactive<Record<string, string>>({});
 
 const canOperate = computed(() => {
@@ -131,21 +136,44 @@ async function loadData() {
     api.businessLines(),
     api.releases(),
   ]);
+  syncProjectState(projectResult);
   projects.value = projectResult;
   lines.value = lineResult;
   releases.value = releaseResult;
   selectedReleaseId.value = releaseResult[0]?.id ?? null;
+}
 
+function syncProjectState(projectResult: Project[]) {
+  const activeCodes = new Set(projectResult.map((project) => project.code));
   for (const project of projectResult) {
-    sourceForms[project.code] ??= {
-      sourceType: "branch",
-      sourceRef: project.defaultBranch,
-    };
+    projectSourceForm(project);
     dependencyText[project.code] = project.dependencies.join(",");
   }
+  for (const code of Object.keys(sourceForms)) {
+    if (!activeCodes.has(code)) {
+      delete sourceForms[code];
+    }
+  }
+  for (const code of Object.keys(dependencyText)) {
+    if (!activeCodes.has(code)) {
+      delete dependencyText[code];
+    }
+  }
+
+  selectedProjectCodes.value = selectedProjectCodes.value.filter((code) => activeCodes.has(code));
   if (selectedProjectCodes.value.length === 0) {
     selectedProjectCodes.value = projectResult.slice(0, 5).map((project) => project.code);
   }
+}
+
+function projectSourceForm(project: Project): SourceForm {
+  if (!sourceForms[project.code]) {
+    sourceForms[project.code] = {
+      sourceType: "branch",
+      sourceRef: project.defaultBranch || "main",
+    };
+  }
+  return sourceForms[project.code];
 }
 
 function toggleProject(code: string) {
@@ -160,11 +188,14 @@ async function submitRelease() {
   const payload: CreateReleasePayload = {
     releaseWindow: new Date(releaseForm.releaseWindow).toISOString(),
     remark: releaseForm.remark,
-    projects: selectedProjects.value.map((project) => ({
-      projectCode: project.code,
-      sourceType: sourceForms[project.code].sourceType,
-      sourceRef: sourceForms[project.code].sourceRef,
-    })),
+    projects: selectedProjects.value.map((project) => {
+      const form = projectSourceForm(project);
+      return {
+        projectCode: project.code,
+        sourceType: form.sourceType,
+        sourceRef: form.sourceRef,
+      };
+    }),
   };
   await run(async () => {
     const created = await api.createRelease(payload);
@@ -207,7 +238,9 @@ async function projectAction(row: ReleaseProject, action: "package" | "deploy") 
 
 async function saveProject(project: Project) {
   await run(async () => {
-    projects.value = await api.updateProject(project);
+    const nextProjects = await api.updateProject(project);
+    syncProjectState(nextProjects);
+    projects.value = nextProjects;
     message.value = `${project.name} 配置已保存`;
   });
 }
@@ -220,15 +253,14 @@ async function saveLine(line: BusinessLine) {
 }
 
 async function saveDependencies(project: Project) {
-  const dependencies = dependencyText[project.code]
+  const dependencies = (dependencyText[project.code] ?? "")
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
   await run(async () => {
-    projects.value = await api.updateDependencies(project.code, dependencies);
-    for (const item of projects.value) {
-      dependencyText[item.code] = item.dependencies.join(",");
-    }
+    const nextProjects = await api.updateDependencies(project.code, dependencies);
+    syncProjectState(nextProjects);
+    projects.value = nextProjects;
     message.value = `${project.name} 依赖已保存`;
   });
 }
@@ -371,14 +403,14 @@ function statusLabel(status: string) {
                 <td>{{ kindText[project.kind] }}</td>
                 <td>{{ project.businessLine?.name }}</td>
                 <td>
-                  <select v-model="sourceForms[project.code].sourceType">
+                  <select v-model="projectSourceForm(project).sourceType">
                     <option value="branch">{{ sourceText.branch }}</option>
                     <option value="tag">{{ sourceText.tag }}</option>
                     <option value="commit">{{ sourceText.commit }}</option>
                   </select>
                 </td>
                 <td>
-                  <input v-model="sourceForms[project.code].sourceRef" />
+                  <input v-model="projectSourceForm(project).sourceRef" />
                 </td>
               </tr>
             </tbody>
