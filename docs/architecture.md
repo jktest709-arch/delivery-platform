@@ -15,7 +15,7 @@ flowchart LR
 
 - `internal/model`：用户、业务线、项目多业务线关联、依赖、上线单、上线项目、发布事件。
 - `internal/api`：HTTP 路由、登录鉴权、配置管理、上线单和执行接口。
-- `internal/release`：批次号生成、tag 生成、同步 pipeline jobs、按目标分组构建、单项目重试、状态聚合。
+- `internal/release`：批次号生成、依赖排序、tag 生成、自动构建等待、同步 pipeline jobs、按目标分组构建、单项目重试、状态聚合。
 - `internal/gitlab`：创建 tag、按 tag 查询 pipeline、查询 pipeline jobs、触发 manual job；dry-run 模式下返回模拟 pipeline/jobs。
 - `internal/bootstrap`：初始化默认账号、业务线、项目和依赖顺序。
 
@@ -47,10 +47,13 @@ sequenceDiagram
   Web->>API: POST /api/releases
   API->>DB: 创建上线单和项目快照
   Web->>API: POST /api/releases/:id/tag
-  API->>GL: 创建项目 tag
-  API->>DB: 更新 tag 状态
-  API->>GL: 按 tag 查询 pipeline，读取 jobs
-  API->>DB: 记录 pipeline ID、jobs 和状态
+  loop 按依赖顺序逐个项目
+    API->>GL: 创建项目 tag
+    API->>GL: 按 tag 查询 pipeline，读取 jobs
+    API->>DB: 记录 pipeline ID、jobs 和状态
+    API->>GL: 轮询 build/package jobs
+    API->>DB: 构建完成后同步最终状态
+  end
   Web->>API: POST /api/releases/:id/package?target=backend
   API->>GL: play build/package manual job
   Web->>API: POST /api/releases/:id/deploy

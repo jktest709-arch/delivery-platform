@@ -24,6 +24,11 @@ type Service struct {
 	gitlab GitLabClient
 }
 
+var (
+	autoBuildPollInterval = 2 * time.Second
+	autoBuildPollAttempts = 150
+)
+
 type CreateRequest struct {
 	BusinessLineCode string                 `json:"businessLineCode"`
 	ReleaseWindow    time.Time              `json:"releaseWindow"`
@@ -69,6 +74,11 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 	if len(projects) != len(projectCodes) {
 		return model.Release{}, fmt.Errorf("some selected projects are not found or disabled")
 	}
+	orderedProjects, err := s.orderProjectsByDependencies(ctx, projects)
+	if err != nil {
+		return model.Release{}, err
+	}
+	projects = orderedProjects
 	releaseBusinessLineCode := strings.TrimSpace(req.BusinessLineCode)
 	businessLineByProjectCode := map[string]model.BusinessLine{}
 	var releaseBusinessLine model.BusinessLine
@@ -111,7 +121,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 			return err
 		}
 
-		for _, project := range projects {
+		for index, project := range projects {
 			source := sourceByCode[project.Code]
 			businessLine := businessLineByProjectCode[project.Code]
 			targetTag := renderTagAt(businessLine, releaseNo, tagTime)
@@ -123,7 +133,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 				SourceRef:      source.SourceRef,
 				TargetTag:      targetTag,
 				Status:         model.ProjectStatusPending,
-				SortOrder:      project.SortOrder,
+				SortOrder:      (index + 1) * 10,
 			}
 			if err := tx.Create(&releaseProject).Error; err != nil {
 				return err
@@ -148,31 +158,18 @@ func (s *Service) CreateTags(ctx context.Context, releaseID uint, operator model
 	if err != nil {
 		return release, err
 	}
-	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, item := range release.Projects {
-			if err := s.gitlab.CreateTag(ctx, item.Project.GitLabProjectID, item.TargetTag, item.SourceRef); err != nil {
-				tx.Model(&model.ReleaseProject{}).Where("id = ?", item.ID).Updates(map[string]interface{}{
-					"status":        model.ProjectStatusBuildFailed,
-					"error_message": err.Error(),
-				})
-				return err
-			}
-			pipeline, err := s.findPipelineAfterTag(ctx, item)
-			if err != nil {
-				tx.Model(&model.ReleaseProject{}).Where("id = ?", item.ID).Updates(map[string]interface{}{
-					"status":        model.ProjectStatusBuildFailed,
-					"error_message": err.Error(),
-				})
-				return err
-			}
-			if err := s.syncPipelineJobs(ctx, tx, item, pipeline); err != nil {
-				return err
-			}
+
+	for _, item := range release.Projects {
+		if err := s.createTagAndWaitBuild(ctx, item); err != nil {
+			return release, err
 		}
+	}
+
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := s.refreshReleaseStatus(tx, release.ID); err != nil {
 			return err
 		}
-		item := event(release.ID, operator.ID, "create_tags", "已按业务线配置创建 tag，并同步 GitLab pipeline/jobs。")
+		item := event(release.ID, operator.ID, "create_tags", "已按依赖顺序创建 tag，并同步 GitLab pipeline/jobs。")
 		return tx.Create(&item).Error
 	})
 	if err != nil {
@@ -236,6 +233,32 @@ func (s *Service) List(ctx context.Context) ([]model.Release, error) {
 		sortRelease(&releases[i])
 	}
 	return releases, nil
+}
+
+func (s *Service) SyncPipelines(ctx context.Context, releaseID uint) (model.Release, error) {
+	release, err := s.Get(ctx, releaseID)
+	if err != nil || s.gitlab == nil {
+		return release, err
+	}
+
+	for _, item := range release.Projects {
+		if item.PipelineID == "" || !shouldRefreshPipelineJobs(item) {
+			continue
+		}
+		jobs, err := s.gitlab.ListPipelineJobs(ctx, item.Project.GitLabProjectID, item.PipelineID)
+		if err != nil {
+			continue
+		}
+		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := s.updateReleaseProjectFromJobs(tx, item.ID, item.PipelineID, jobs, ""); err != nil {
+				return err
+			}
+			return s.refreshReleaseStatus(tx, item.ReleaseID)
+		}); err != nil {
+			return release, err
+		}
+	}
+	return s.Get(ctx, releaseID)
 }
 
 func (s *Service) Delete(ctx context.Context, id uint) error {
@@ -387,6 +410,35 @@ func (s *Service) playJobs(ctx context.Context, tx *gorm.DB, item model.ReleaseP
 	return s.updateReleaseProjectFromJobs(tx, item.ID, item.PipelineID, refreshedJobs, "")
 }
 
+func (s *Service) createTagAndWaitBuild(ctx context.Context, item model.ReleaseProject) error {
+	pipeline := gitlab.PipelineResponse{
+		ID: item.PipelineID,
+	}
+	if item.PipelineID == "" {
+		if err := s.gitlab.CreateTag(ctx, item.Project.GitLabProjectID, item.TargetTag, item.SourceRef); err != nil {
+			_ = s.recordActionFailure(ctx, item.ReleaseID, item.ID, "package", err)
+			return err
+		}
+		found, err := s.findPipelineAfterTag(ctx, item)
+		if err != nil {
+			_ = s.recordActionFailure(ctx, item.ReleaseID, item.ID, "package", err)
+			return err
+		}
+		pipeline = found
+	}
+
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.syncPipelineJobs(ctx, tx, item, pipeline); err != nil {
+			return err
+		}
+		return s.refreshReleaseStatus(tx, item.ReleaseID)
+	}); err != nil {
+		return err
+	}
+
+	return s.waitForAutoBuild(ctx, item, pipeline.ID)
+}
+
 func (s *Service) findPipelineAfterTag(ctx context.Context, item model.ReleaseProject) (gitlab.PipelineResponse, error) {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
@@ -410,6 +462,43 @@ func (s *Service) syncPipelineJobs(ctx context.Context, tx *gorm.DB, item model.
 		return err
 	}
 	return s.updateReleaseProjectFromJobs(tx, item.ID, pipeline.ID, jobs, "")
+}
+
+func (s *Service) waitForAutoBuild(ctx context.Context, item model.ReleaseProject, pipelineID string) error {
+	for attempt := 0; attempt < autoBuildPollAttempts; attempt++ {
+		jobs, err := s.gitlab.ListPipelineJobs(ctx, item.Project.GitLabProjectID, pipelineID)
+		if err != nil {
+			_ = s.recordActionFailure(ctx, item.ReleaseID, item.ID, "package", err)
+			return err
+		}
+		if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := s.updateReleaseProjectFromJobs(tx, item.ID, pipelineID, jobs, ""); err != nil {
+				return err
+			}
+			return s.refreshReleaseStatus(tx, item.ReleaseID)
+		}); err != nil {
+			return err
+		}
+
+		switch actionState(jobs, "package") {
+		case "failed":
+			err := fmt.Errorf("%s 自动构建失败", item.Project.Name)
+			_ = s.recordActionFailure(ctx, item.ReleaseID, item.ID, "package", err)
+			return err
+		case "running":
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(autoBuildPollInterval):
+			}
+		default:
+			return nil
+		}
+	}
+
+	err := fmt.Errorf("%s 自动构建等待超时", item.Project.Name)
+	_ = s.recordActionFailure(ctx, item.ReleaseID, item.ID, "package", err)
+	return err
 }
 
 func (s *Service) updateReleaseProjectFromJobs(tx *gorm.DB, releaseProjectID uint, pipelineID string, jobs []gitlab.JobResponse, errorMessage string) error {
@@ -464,6 +553,22 @@ func (s *Service) markActionFailed(tx *gorm.DB, releaseProjectID uint, action st
 	return err
 }
 
+func (s *Service) recordActionFailure(ctx context.Context, releaseID uint, releaseProjectID uint, action string, cause error) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		failedStatus := model.ProjectStatusBuildFailed
+		if action == "deploy" {
+			failedStatus = model.ProjectStatusDeployFailed
+		}
+		if err := tx.Model(&model.ReleaseProject{}).Where("id = ?", releaseProjectID).Updates(map[string]interface{}{
+			"status":        failedStatus,
+			"error_message": cause.Error(),
+		}).Error; err != nil {
+			return err
+		}
+		return s.refreshReleaseStatus(tx, releaseID)
+	})
+}
+
 func filterActionJobs(jobs []gitlab.JobResponse, action string) []gitlab.JobResponse {
 	result := []gitlab.JobResponse{}
 	for _, job := range jobs {
@@ -494,23 +599,37 @@ func firstActionJobID(jobs []gitlab.JobResponse, action string) string {
 }
 
 func projectStatusFromJobs(jobs []gitlab.JobResponse) string {
-	buildJobs := filterActionJobs(jobs, "package")
-	deployJobs := filterActionJobs(jobs, "deploy")
 	switch {
-	case anyJobStatus(deployJobs, "failed", "canceled"):
+	case actionState(jobs, "deploy") == "failed":
 		return model.ProjectStatusDeployFailed
-	case anyJobStatus(buildJobs, "failed", "canceled"):
+	case actionState(jobs, "package") == "failed":
 		return model.ProjectStatusBuildFailed
-	case anyJobRunning(deployJobs):
+	case actionState(jobs, "deploy") == "running":
 		return model.ProjectStatusDeploying
-	case len(deployJobs) > 0 && allJobsSuccessful(deployJobs):
+	case actionState(jobs, "deploy") == "success":
 		return model.ProjectStatusDeploySuccess
-	case anyJobRunning(buildJobs):
+	case actionState(jobs, "package") == "running":
 		return model.ProjectStatusBuilding
-	case len(buildJobs) > 0 && allJobsSuccessful(buildJobs):
+	case actionState(jobs, "package") == "success":
 		return model.ProjectStatusBuildSuccess
 	default:
 		return model.ProjectStatusTagged
+	}
+}
+
+func actionState(jobs []gitlab.JobResponse, action string) string {
+	actionJobs := filterActionJobs(jobs, action)
+	switch {
+	case len(actionJobs) == 0:
+		return "missing"
+	case anyJobStatus(actionJobs, "failed", "canceled"):
+		return "failed"
+	case anyJobRunning(actionJobs):
+		return "running"
+	case allJobsSuccessful(actionJobs):
+		return "success"
+	default:
+		return "waiting"
 	}
 }
 
@@ -544,11 +663,35 @@ func allJobsSuccessful(jobs []gitlab.JobResponse) bool {
 		return false
 	}
 	for _, job := range jobs {
-		if job.Status != "success" {
+		if job.Status != "success" && job.Status != "skipped" {
 			return false
 		}
 	}
 	return true
+}
+
+func shouldRefreshPipelineJobs(item model.ReleaseProject) bool {
+	if item.Status == model.ProjectStatusBuilding || item.Status == model.ProjectStatusDeploying {
+		return true
+	}
+	if len(item.Jobs) == 0 {
+		return true
+	}
+	for _, job := range item.Jobs {
+		if isRunningStatus(job.Status) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRunningStatus(status string) bool {
+	switch status {
+	case "created", "pending", "preparing", "running", "scheduled", "waiting_for_resource":
+		return true
+	default:
+		return false
+	}
 }
 
 func selectProjectBusinessLine(project model.Project, requestedCode string) (model.BusinessLine, error) {
@@ -587,6 +730,78 @@ func projectBusinessLines(project model.Project) []model.BusinessLine {
 		add(line)
 	}
 	return lines
+}
+
+func (s *Service) orderProjectsByDependencies(ctx context.Context, projects []model.Project) ([]model.Project, error) {
+	if len(projects) <= 1 {
+		return projects, nil
+	}
+
+	projectByID := map[uint]model.Project{}
+	selectedIDs := make([]uint, 0, len(projects))
+	for _, project := range projects {
+		projectByID[project.ID] = project
+		selectedIDs = append(selectedIDs, project.ID)
+	}
+
+	var dependencies []model.ProjectDependency
+	if err := s.db.WithContext(ctx).
+		Where("project_id IN ? AND depends_on_project_id IN ?", selectedIDs, selectedIDs).
+		Find(&dependencies).Error; err != nil {
+		return nil, err
+	}
+
+	inDegree := map[uint]int{}
+	nextByDependency := map[uint][]uint{}
+	for _, project := range projects {
+		inDegree[project.ID] = 0
+	}
+	for _, dependency := range dependencies {
+		if _, ok := projectByID[dependency.ProjectID]; !ok {
+			continue
+		}
+		if _, ok := projectByID[dependency.DependsOnProjectID]; !ok {
+			continue
+		}
+		inDegree[dependency.ProjectID]++
+		nextByDependency[dependency.DependsOnProjectID] = append(nextByDependency[dependency.DependsOnProjectID], dependency.ProjectID)
+	}
+
+	ready := make([]model.Project, 0, len(projects))
+	for _, project := range projects {
+		if inDegree[project.ID] == 0 {
+			ready = append(ready, project)
+		}
+	}
+	sortProjectsByConfiguredOrder(ready)
+
+	ordered := make([]model.Project, 0, len(projects))
+	for len(ready) > 0 {
+		project := ready[0]
+		ready = ready[1:]
+		ordered = append(ordered, project)
+
+		for _, nextID := range nextByDependency[project.ID] {
+			inDegree[nextID]--
+			if inDegree[nextID] == 0 {
+				ready = append(ready, projectByID[nextID])
+				sortProjectsByConfiguredOrder(ready)
+			}
+		}
+	}
+	if len(ordered) != len(projects) {
+		return nil, fmt.Errorf("项目依赖关系存在循环，无法生成上线顺序")
+	}
+	return ordered, nil
+}
+
+func sortProjectsByConfiguredOrder(projects []model.Project) {
+	sort.SliceStable(projects, func(i, j int) bool {
+		if projects[i].SortOrder == projects[j].SortOrder {
+			return projects[i].Code < projects[j].Code
+		}
+		return projects[i].SortOrder < projects[j].SortOrder
+	})
 }
 
 func (s *Service) nextBatchNo(ctx context.Context) (string, string, error) {

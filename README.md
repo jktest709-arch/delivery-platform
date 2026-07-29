@@ -138,8 +138,8 @@ Token 至少需要具备创建 tag、读取 pipeline/jobs、触发 manual job �
 - 项目配置：新增、编辑、删除项目，维护 GitLab 地址、Project ID、默认分支、关联多条业务线。
 - 业务线配置：新增、编辑、删除业务线，维护平台、tag 前缀和 tag 模板；删除已被项目使用的业务线时，需要选择替代业务线并迁移关联项目关系。
 - 依赖顺序配置：管理员预先配置项目顺序和依赖关系，支持新增、编辑、按依赖关系整行删除和清空依赖。
-- 统一打 tag：对上线单内项目按本次发布业务线生成生产 tag。
-- Pipeline 流程：执行台按项目展示创建 Tag、Tag 触发的 Pipeline、GitLab jobs 状态；真实模式下创建 Tag 调用 GitLab Tags API，随后按 tag 查询 Pipeline，再通过 Jobs API 获取 build/deploy jobs。
+- 统一打 tag：对上线单内项目按依赖顺序生成生产 tag；如果 tag pipeline 自动触发构建，会等待当前项目构建结束后再处理下一个项目。
+- Pipeline 流程：执行台按项目展示创建 Tag、Tag 触发的 Pipeline、GitLab jobs 状态；真实模式下创建 Tag 调用 GitLab Tags API，随后按 tag 查询 Pipeline，再通过 Jobs API 获取 build/deploy jobs；没有 deploy job 的 lib 类项目只展示构建链路。
 - 一键构建：支持全量、后端、前端三种队列，触发对应 pipeline 内 manual 构建 job。
 - 单项目操作：支持单项目构建和部署，用于失败重试或补发。
 - 发布历史：持久化记录批次、项目、tag、pipeline、操作时间线，并支持清理不再需要的历史发布任务。
@@ -147,7 +147,7 @@ Token 至少需要具备创建 tag、读取 pipeline/jobs、触发 manual job �
 
 Tag 模板支持 `{prefix}`、`{timestamp}`、`{datetime}`、`{date}`、`{releaseNo}`，其中时间戳按秒生成，格式为 `yyyyMMddHHmmss`。旧模板里的 `{date}` 会兼容为秒级时间戳。
 
-当前 GitLab CI 流程以 tag 触发 pipeline 为准：平台创建 tag 后等待 GitLab 自动生成 pipeline，再查询该 pipeline 的 jobs。构建/部署按钮不会重新触发 pipeline，也不会传 `JOB_NAME`；它会对匹配 build/package 或 deploy stage/name 的 manual job 调用 GitLab play job API。
+当前 GitLab CI 流程以 tag 触发 pipeline 为准：平台创建 tag 后等待 GitLab 自动生成 pipeline，再查询该 pipeline 的 jobs。构建/部署按钮不会重新触发 pipeline，也不会传 `JOB_NAME`；它会对匹配 build/package 或 deploy stage/name 的 manual job 调用 GitLab play job API。执行台会轮询当前上线单并同步 GitLab jobs，避免自动构建完成后页面仍停留在旧状态。
 
 ## 后续建议
 

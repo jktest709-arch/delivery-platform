@@ -553,7 +553,7 @@ func (h Handler) getRelease(c *gin.Context) {
 	if !ok {
 		return
 	}
-	item, err := h.releaseService.Get(c.Request.Context(), releaseID)
+	item, err := h.releaseService.SyncPipelines(c.Request.Context(), releaseID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "上线单不存在"})
 		return

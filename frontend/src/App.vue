@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { api, clearToken, getToken, setToken } from "./api";
 import type {
   BusinessLine,
@@ -208,12 +208,21 @@ const selectedFrontendCount = computed(() => {
   return selectedProjects.value.filter((project) => project.kind === "frontend").length;
 });
 
+const currentReleaseHasDeployJobs = computed(() => {
+  return currentRelease.value?.projects.some((row) => hasDeployJobs(row)) ?? false;
+});
+
 watch(
   () => releaseForm.businessLineCode,
   () => syncSelectedProjectsForReleaseLine(),
 );
 
+let releaseRefreshTimer: number | null = null;
+
 onMounted(async () => {
+  releaseRefreshTimer = window.setInterval(() => {
+    void refreshCurrentRelease();
+  }, 5000);
   if (!getToken()) {
     return;
   }
@@ -222,6 +231,12 @@ onMounted(async () => {
     await loadData();
   } catch {
     clearToken();
+  }
+});
+
+onBeforeUnmount(() => {
+  if (releaseRefreshTimer) {
+    window.clearInterval(releaseRefreshTimer);
   }
 });
 
@@ -262,6 +277,18 @@ async function loadData() {
   selectedReleaseId.value = releaseResult[0]?.id ?? null;
   if (!canManageUsers.value && activeTab.value === "users") {
     activeTab.value = "apply";
+  }
+}
+
+async function refreshCurrentRelease() {
+  if (activeTab.value !== "console" || loading.value || !currentRelease.value || !releaseNeedsPolling(currentRelease.value)) {
+    return;
+  }
+  try {
+    const updated = await api.release(currentRelease.value.id);
+    upsertRelease(updated);
+  } catch {
+    // Keep the current console usable if a transient GitLab refresh fails.
   }
 }
 
@@ -1036,6 +1063,14 @@ function actionJobs(row: ReleaseProject, action: "package" | "deploy") {
   return jobs.filter((job) => matchesActionJob(job, action));
 }
 
+function hasDeployJobs(row: ReleaseProject) {
+  return actionJobs(row, "deploy").length > 0;
+}
+
+function shouldShowDeployStep(row: ReleaseProject) {
+  return hasDeployJobs(row);
+}
+
 function matchesActionJob(job: PipelineJob, action: "package" | "deploy") {
   const value = `${job.stage} ${job.name}`.toLowerCase();
   if (action === "deploy") {
@@ -1057,6 +1092,21 @@ function jobStatusLabel(status: string) {
     skipped: "已跳过",
   };
   return labels[status] ?? status;
+}
+
+function releaseNeedsPolling(item: Release) {
+  return item.projects.some((row) => {
+    if (row.status === "building" || row.status === "deploying") {
+      return true;
+    }
+    const jobs = Array.isArray(row.jobs) ? row.jobs : [];
+    if (row.pipelineId && jobs.length === 0) {
+      return true;
+    }
+    return jobs.some((job) =>
+      ["created", "pending", "preparing", "running", "scheduled", "waiting_for_resource"].includes(job.status),
+    );
+  });
 }
 
 function upsertRelease(updated: Release) {
@@ -1273,7 +1323,12 @@ function statusLabel(status: string) {
               <small>GitLab Tags API -> tag pipeline -> Jobs API -> play manual job</small>
             </div>
             <div class="pipeline-list">
-              <article v-for="row in currentRelease.projects" :key="row.id" class="pipeline-row">
+              <article
+                v-for="row in currentRelease.projects"
+                :key="row.id"
+                class="pipeline-row"
+                :class="{ 'no-deploy': !shouldShowDeployStep(row) }"
+              >
                 <div>
                   <strong>{{ row.project.name }}</strong>
                   <small>{{ row.project.gitlabProjectId }}</small>
@@ -1302,7 +1357,7 @@ function statusLabel(status: string) {
                   </div>
                   <small v-else>等待 Pipeline jobs</small>
                 </div>
-                <div class="pipeline-step" :class="deployStepState(row)">
+                <div v-if="shouldShowDeployStep(row)" class="pipeline-step" :class="deployStepState(row)">
                   <span>{{ pipelineStepLabel(deployStepState(row)) }}</span>
                   <strong>部署 Jobs</strong>
                   <div v-if="actionJobs(row, 'deploy').length" class="job-list">
@@ -1321,7 +1376,12 @@ function statusLabel(status: string) {
             <button :disabled="!canOperate || loading" @click="releaseAction('package', 'all')">全量构建</button>
             <button :disabled="!canOperate || loading" @click="releaseAction('package', 'backend')">后端构建</button>
             <button :disabled="!canOperate || loading" @click="releaseAction('package', 'frontend')">前端构建</button>
-            <button class="primary" :disabled="!canOperate || loading" @click="releaseAction('deploy', 'all')">
+            <button
+              v-if="currentReleaseHasDeployJobs"
+              class="primary"
+              :disabled="!canOperate || loading"
+              @click="releaseAction('deploy', 'all')"
+            >
               生产部署
             </button>
           </div>
@@ -1354,7 +1414,9 @@ function statusLabel(status: string) {
                   </td>
                   <td class="inline-actions">
                     <button :disabled="!canOperate || loading" @click="projectAction(row, 'package')">构建</button>
-                    <button :disabled="!canOperate || loading" @click="projectAction(row, 'deploy')">部署</button>
+                    <button v-if="hasDeployJobs(row)" :disabled="!canOperate || loading" @click="projectAction(row, 'deploy')">
+                      部署
+                    </button>
                   </td>
                 </tr>
               </tbody>

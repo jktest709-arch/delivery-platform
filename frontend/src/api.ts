@@ -118,6 +118,9 @@ export const api = {
   releases() {
     return request<Release[]>("/releases");
   },
+  release(id: number) {
+    return request<Release>(`/releases/${id}`);
+  },
   createRelease(payload: CreateReleasePayload) {
     return request<Release>("/releases", {
       method: "POST",

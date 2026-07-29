@@ -413,6 +413,10 @@ tr:last-child td {
   align-items: stretch;
 }
 
+.pipeline-row.no-deploy {
+  grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(150px, 1fr));
+}
+
 .pipeline-step {
   display: grid;
   gap: 4px;
