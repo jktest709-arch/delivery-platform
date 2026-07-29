@@ -273,7 +273,33 @@ func (h Handler) deleteBusinessLine(c *gin.Context) {
 		return
 	}
 	if count > 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "业务线已被项目使用，不能删除"})
+		replacementCode := strings.TrimSpace(c.Query("replacementCode"))
+		if replacementCode == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "业务线已被项目使用，请选择替代业务线后删除"})
+			return
+		}
+		if replacementCode == line.Code {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "替代业务线不能与待删除业务线相同"})
+			return
+		}
+		var replacement model.BusinessLine
+		if err := h.db.Where("code = ?", replacementCode).First(&replacement).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "替代业务线不存在"})
+			return
+		}
+		err := h.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Model(&model.Project{}).
+				Where("business_line_id = ?", line.ID).
+				Update("business_line_id", replacement.ID).Error; err != nil {
+				return err
+			}
+			return tx.Delete(&line).Error
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+		h.listBusinessLines(c)
 		return
 	}
 	if err := h.db.Delete(&line).Error; err != nil {

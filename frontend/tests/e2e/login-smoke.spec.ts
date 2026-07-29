@@ -165,6 +165,7 @@ test("admin can log in and visit every main page without runtime errors", async 
 
   await page.getByRole("button", { name: "Tag 与依赖" }).click();
   await expect(page.getByRole("button", { name: "新增业务线" })).toBeVisible();
+  await expect(page.getByText("关联项目 / 迁移到")).toBeVisible();
   await expect(page.getByRole("heading", { name: "项目依赖顺序" })).toBeVisible();
   await expect(page.getByRole("button", { name: "新增依赖关系" })).toBeVisible();
   await expect(page.getByRole("button", { name: "删除" }).first()).toBeVisible();

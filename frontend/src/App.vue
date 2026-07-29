@@ -87,6 +87,7 @@ const showNewProjectForm = ref(false);
 const newProjectForm = reactive<ProjectForm>(emptyProjectForm());
 const editingLineCode = ref<string | null>(null);
 const lineDrafts = reactive<Record<string, BusinessLineForm>>({});
+const lineReplacementCodes = reactive<Record<string, string>>({});
 const showNewLineForm = ref(false);
 const newLineForm = reactive<BusinessLineForm>(emptyBusinessLineForm());
 const editingDependencyCode = ref<string | null>(null);
@@ -161,9 +162,10 @@ async function loadData() {
     api.businessLines(),
     api.releases(),
   ]);
-  syncProjectState(projectResult);
   projects.value = projectResult;
   lines.value = lineResult;
+  syncProjectState(projectResult);
+  syncLineState(lineResult);
   releases.value = releaseResult;
   selectedReleaseId.value = releaseResult[0]?.id ?? null;
 }
@@ -207,6 +209,29 @@ function syncProjectState(projectResult: Project[]) {
   }
   if (selectedProjectCodes.value.length === 0) {
     selectedProjectCodes.value = projectResult.slice(0, 5).map((project) => project.code);
+  }
+}
+
+function syncLineState(lineResult: BusinessLine[]) {
+  const activeCodes = new Set(lineResult.map((line) => line.code));
+  for (const code of Object.keys(lineDrafts)) {
+    if (!activeCodes.has(code)) {
+      delete lineDrafts[code];
+    }
+  }
+  for (const code of Object.keys(lineReplacementCodes)) {
+    if (!activeCodes.has(code)) {
+      delete lineReplacementCodes[code];
+    }
+  }
+  if (editingLineCode.value && !activeCodes.has(editingLineCode.value)) {
+    editingLineCode.value = null;
+  }
+  for (const line of lineResult) {
+    const options = replacementLineOptions(line.code);
+    if (!lineReplacementCodes[line.code] || !options.some((item) => item.code === lineReplacementCodes[line.code])) {
+      lineReplacementCodes[line.code] = options[0]?.code ?? "";
+    }
   }
 }
 
@@ -485,6 +510,7 @@ async function createLineFromDraft() {
   const payload = normalizeLineForm(newLineForm);
   await run(async () => {
     lines.value = await api.createBusinessLine(payload);
+    syncLineState(lines.value);
     showNewLineForm.value = false;
     message.value = `${payload.name} 已新增`;
   });
@@ -494,17 +520,41 @@ async function saveLineDraft(line: BusinessLine) {
   const payload = normalizeLineForm(lineDraft(line));
   await run(async () => {
     lines.value = await api.updateBusinessLine(payload);
+    syncLineState(lines.value);
     cancelLineEdit(line.code);
     message.value = `${payload.name} 配置已保存`;
   });
 }
 
+function lineUsageCount(code: string) {
+  return projects.value.filter((project) => (project.businessLineCode || project.businessLine?.code) === code).length;
+}
+
+function businessLineName(code: string) {
+  return lines.value.find((line) => line.code === code)?.name ?? code;
+}
+
+function replacementLineOptions(code: string) {
+  return lines.value.filter((line) => line.code !== code);
+}
+
 async function deleteLine(line: BusinessLine) {
-  if (!window.confirm(`确认删除业务线 ${line.name}？`)) {
+  const usageCount = lineUsageCount(line.code);
+  const replacementCode = usageCount > 0 ? lineReplacementCodes[line.code] : "";
+  if (usageCount > 0 && !replacementCode) {
+    error.value = "该业务线已被项目使用，请先新增或选择替代业务线";
+    return;
+  }
+  const suffix = usageCount > 0 ? `，${usageCount} 个关联项目会迁移到 ${businessLineName(replacementCode)}` : "";
+  if (!window.confirm(`确认删除业务线 ${line.name}${suffix}？`)) {
     return;
   }
   await run(async () => {
-    lines.value = await api.deleteBusinessLine(line.code);
+    lines.value = await api.deleteBusinessLine(line.code, replacementCode);
+    const projectResult = await api.projects();
+    projects.value = projectResult;
+    syncProjectState(projectResult);
+    syncLineState(lines.value);
     cancelLineEdit(line.code);
     message.value = `${line.name} 已删除`;
   });
@@ -1079,6 +1129,7 @@ function statusLabel(status: string) {
                 <th>Tag 前缀</th>
                 <th>Tag 模板</th>
                 <th>审批人</th>
+                <th>关联项目 / 迁移到</th>
                 <th>操作</th>
               </tr>
             </thead>
@@ -1110,6 +1161,18 @@ function statusLabel(status: string) {
                   <input v-if="editingLineCode === line.code" v-model="lineDraft(line).approver" />
                   <span v-else>{{ line.approver }}</span>
                 </td>
+                <td class="stack-cell">
+                  <span>{{ lineUsageCount(line.code) }} 个项目</span>
+                  <select
+                    v-if="lineUsageCount(line.code) > 0"
+                    v-model="lineReplacementCodes[line.code]"
+                    :disabled="replacementLineOptions(line.code).length === 0"
+                  >
+                    <option v-for="option in replacementLineOptions(line.code)" :key="option.code" :value="option.code">
+                      {{ option.name }}
+                    </option>
+                  </select>
+                </td>
                 <td class="inline-actions">
                   <template v-if="editingLineCode === line.code">
                     <button class="primary" :disabled="loading" @click="saveLineDraft(line)">保存</button>
@@ -1117,7 +1180,15 @@ function statusLabel(status: string) {
                   </template>
                   <template v-else>
                     <button :disabled="loading" @click="startLineEdit(line)">编辑</button>
-                    <button class="danger-button" :disabled="loading" @click="deleteLine(line)">删除</button>
+                    <button
+                      class="danger-button"
+                      :disabled="
+                        loading || (lineUsageCount(line.code) > 0 && replacementLineOptions(line.code).length === 0)
+                      "
+                      @click="deleteLine(line)"
+                    >
+                      删除
+                    </button>
                   </template>
                 </td>
               </tr>

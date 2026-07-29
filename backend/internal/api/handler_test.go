@@ -113,6 +113,24 @@ func TestBusinessLineConfigCanCreateAndDelete(t *testing.T) {
 	assertBusinessLineMissing(t, recorder.Body.Bytes(), "cc")
 }
 
+func TestBusinessLineDeleteCanMigrateUsedProjects(t *testing.T) {
+	router := newTestRouter(t)
+	token := login(t, router)
+
+	recorder := authedRequest(t, router, token, http.MethodDelete, "/api/business-lines/ops?replacementCode=aa", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("DELETE /api/business-lines/ops status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	assertBusinessLineMissing(t, recorder.Body.Bytes(), "ops")
+
+	recorder = authedRequest(t, router, token, http.MethodGet, "/api/projects", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /api/projects status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	assertProjectBusinessLine(t, recorder.Body.Bytes(), "base-auth", "aa")
+	assertProjectBusinessLine(t, recorder.Body.Bytes(), "reporting", "aa")
+}
+
 func TestReleaseCanBeDeletedWithProjectsAndEvents(t *testing.T) {
 	router := newTestRouter(t)
 	token := login(t, router)
@@ -275,6 +293,23 @@ func assertBusinessLineMissing(t *testing.T, body []byte, code string) {
 			t.Fatalf("business line %s should be absent after deletion", code)
 		}
 	}
+}
+
+func assertProjectBusinessLine(t *testing.T, body []byte, code string, businessLineCode string) {
+	t.Helper()
+	var payload []map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode projects response: %v", err)
+	}
+	for _, project := range payload {
+		if project["code"] == code {
+			if project["businessLineCode"] != businessLineCode {
+				t.Fatalf("project %s businessLineCode = %v, want %s", code, project["businessLineCode"], businessLineCode)
+			}
+			return
+		}
+	}
+	t.Fatalf("project %s not found in response: %s", code, string(body))
 }
 
 func assertReleaseMissing(t *testing.T, body []byte, batchNo string) {

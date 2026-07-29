@@ -86,8 +86,9 @@ export const api = {
       body: JSON.stringify(line),
     });
   },
-  deleteBusinessLine(code: string) {
-    return request<BusinessLine[]>(`/business-lines/${code}`, { method: "DELETE" });
+  deleteBusinessLine(code: string, replacementCode = "") {
+    const query = replacementCode ? `?replacementCode=${encodeURIComponent(replacementCode)}` : "";
+    return request<BusinessLine[]>(`/business-lines/${code}${query}`, { method: "DELETE" });
   },
   updateDependencies(code: string, dependencies: string[]) {
     return request<Project[]>(`/dependencies/${code}`, {
