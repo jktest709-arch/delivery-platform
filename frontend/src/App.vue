@@ -77,6 +77,13 @@ type DependencyForm = {
   projectCode: string;
   dependencyCode: string;
 };
+type DependencyRow = {
+  key: string;
+  project: Project;
+  dependencyCode: string;
+  isEmpty: boolean;
+  isEditing: boolean;
+};
 
 const selectedProjectCodes = ref<string[]>([]);
 const sourceForms = reactive<Record<string, SourceForm>>({});
@@ -111,6 +118,44 @@ const currentRelease = computed(() => {
 
 const orderedProjects = computed(() => {
   return [...projects.value].sort((a, b) => a.sortOrder - b.sortOrder);
+});
+
+const dependencyRows = computed<DependencyRow[]>(() => {
+  const rows: DependencyRow[] = [];
+  for (const project of orderedProjects.value) {
+    if (editingDependencyCode.value === project.code) {
+      rows.push({
+        key: `${project.code}:editing`,
+        project,
+        dependencyCode: "",
+        isEmpty: false,
+        isEditing: true,
+      });
+      continue;
+    }
+
+    const dependencies = projectDependencies(project);
+    if (dependencies.length === 0) {
+      rows.push({
+        key: `${project.code}:empty`,
+        project,
+        dependencyCode: "",
+        isEmpty: true,
+        isEditing: false,
+      });
+      continue;
+    }
+    for (const dependencyCode of dependencies) {
+      rows.push({
+        key: `${project.code}:${dependencyCode}`,
+        project,
+        dependencyCode,
+        isEmpty: false,
+        isEditing: false,
+      });
+    }
+  }
+  return rows;
 });
 
 const selectedProjects = computed(() => {
@@ -560,11 +605,6 @@ async function deleteLine(line: BusinessLine) {
   });
 }
 
-function dependencyValue(project: Project) {
-  const dependencies = projectDependencies(project);
-  return dependencies.length ? dependencies.join(", ") : "-";
-}
-
 function dependencyDraft(project: Project) {
   if (dependencyDrafts[project.code] === undefined) {
     dependencyDrafts[project.code] = projectDependencies(project).join(",");
@@ -656,7 +696,7 @@ async function createDependencyFromDraft() {
 }
 
 async function deleteDependency(project: Project, dependencyCode: string) {
-  if (!window.confirm(`确认删除 ${project.name} 对 ${dependencyProjectName(dependencyCode)} 的依赖？`)) {
+  if (!window.confirm(`确认删除整行依赖关系：${project.name} -> ${dependencyProjectName(dependencyCode)}？`)) {
     return;
   }
   const dependencies = projectDependencies(project).filter((code) => code !== dependencyCode);
@@ -664,7 +704,7 @@ async function deleteDependency(project: Project, dependencyCode: string) {
     const nextProjects = await api.updateDependencies(project.code, dependencies);
     syncProjectState(nextProjects);
     projects.value = nextProjects;
-    message.value = `${project.name} 已删除依赖 ${dependencyProjectName(dependencyCode)}`;
+    message.value = `${project.name} 已删除整行依赖关系`;
   });
 }
 
@@ -1248,36 +1288,40 @@ function statusLabel(status: string) {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="project in orderedProjects" :key="project.code">
-                <td>{{ project.sortOrder }}</td>
+              <tr v-for="row in dependencyRows" :key="row.key">
+                <td>{{ row.project.sortOrder }}</td>
                 <td>
-                  <strong>{{ project.name }}</strong>
-                  <small>{{ project.code }}</small>
+                  <strong>{{ row.project.name }}</strong>
+                  <small>{{ row.project.code }}</small>
                 </td>
-                <td>{{ kindText[project.kind] }}</td>
+                <td>{{ kindText[row.project.kind] }}</td>
                 <td>
-                  <input
-                    v-if="editingDependencyCode === project.code"
-                    v-model="dependencyDrafts[project.code]"
-                  />
-                  <div v-else-if="projectDependencies(project).length" class="dependency-tags">
-                    <span v-for="dependency in projectDependencies(project)" :key="dependency" class="dependency-tag">
-                      <code>{{ dependency }}</code>
-                      <small>{{ dependencyProjectName(dependency) }}</small>
-                      <button class="danger-button" :disabled="loading" @click="deleteDependency(project, dependency)">
-                        删除
-                      </button>
-                    </span>
-                  </div>
-                  <span v-else>{{ dependencyValue(project) }}</span>
+                  <input v-if="row.isEditing" v-model="dependencyDrafts[row.project.code]" />
+                  <span v-else-if="row.isEmpty">-</span>
+                  <span v-else class="dependency-relation">
+                    <code>{{ row.dependencyCode }}</code>
+                    <small>{{ dependencyProjectName(row.dependencyCode) }}</small>
+                  </span>
                 </td>
                 <td class="inline-actions">
-                  <template v-if="editingDependencyCode === project.code">
-                    <button class="primary" :disabled="loading" @click="saveDependencyDraft(project)">保存</button>
-                    <button :disabled="loading" @click="cancelDependencyEdit(project.code)">取消</button>
-                    <button class="danger-button" :disabled="loading" @click="clearDependencyDraft(project)">清空</button>
+                  <template v-if="row.isEditing">
+                    <button class="primary" :disabled="loading" @click="saveDependencyDraft(row.project)">保存</button>
+                    <button :disabled="loading" @click="cancelDependencyEdit(row.project.code)">取消</button>
+                    <button class="danger-button" :disabled="loading" @click="clearDependencyDraft(row.project)">
+                      清空
+                    </button>
                   </template>
-                  <button v-else :disabled="loading" @click="startDependencyEdit(project)">编辑</button>
+                  <template v-else>
+                    <button :disabled="loading" @click="startDependencyEdit(row.project)">编辑</button>
+                    <button
+                      v-if="!row.isEmpty"
+                      class="danger-button"
+                      :disabled="loading"
+                      @click="deleteDependency(row.project, row.dependencyCode)"
+                    >
+                      删除整行
+                    </button>
+                  </template>
                 </td>
               </tr>
             </tbody>
