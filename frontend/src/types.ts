@@ -11,6 +11,14 @@ export type User = {
   status: string;
 };
 
+export type UserPayload = {
+  username: string;
+  displayName: string;
+  role: Role;
+  status: string;
+  password?: string;
+};
+
 export type BusinessLine = {
   id: number;
   code: string;

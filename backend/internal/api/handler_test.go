@@ -131,6 +131,82 @@ func TestBusinessLineDeleteCanMigrateUsedProjects(t *testing.T) {
 	assertProjectBusinessLine(t, recorder.Body.Bytes(), "reporting", "aa")
 }
 
+func TestUserManagementCanCreateUpdateAndDeleteUser(t *testing.T) {
+	router := newTestRouter(t)
+	token := login(t, router)
+
+	body := `{
+		"username":"qa",
+		"displayName":"测试同学",
+		"role":"developer",
+		"status":"enabled",
+		"password":"qa123456"
+	}`
+	recorder := authedRequest(t, router, token, http.MethodPost, "/api/users", body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("POST /api/users status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	userID := assertUserRole(t, recorder.Body.Bytes(), "qa", "developer")
+
+	updateBody := `{
+		"username":"qa",
+		"displayName":"测试同学",
+		"role":"release_manager",
+		"status":"disabled",
+		"password":""
+	}`
+	recorder = authedRequest(t, router, token, http.MethodPut, "/api/users/"+strconv.Itoa(int(userID)), updateBody)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PUT /api/users/%d status = %d, body = %s", userID, recorder.Code, recorder.Body.String())
+	}
+	assertUserRole(t, recorder.Body.Bytes(), "qa", "release_manager")
+
+	recorder = authedRequest(t, router, token, http.MethodDelete, "/api/users/"+strconv.Itoa(int(userID)), "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("DELETE /api/users/%d status = %d, body = %s", userID, recorder.Code, recorder.Body.String())
+	}
+	assertUserMissing(t, recorder.Body.Bytes(), "qa")
+}
+
+func TestUserManagementRequiresAdmin(t *testing.T) {
+	router := newTestRouter(t)
+	token := loginAs(t, router, "release", "release123")
+
+	recorder := authedRequest(t, router, token, http.MethodGet, "/api/users", "")
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("GET /api/users as release manager status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestDisabledUserTokenIsRejected(t *testing.T) {
+	router := newTestRouter(t)
+	adminToken := login(t, router)
+	devToken := loginAs(t, router, "dev", "dev123")
+
+	recorder := authedRequest(t, router, adminToken, http.MethodGet, "/api/users", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /api/users status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	devID := assertUserRole(t, recorder.Body.Bytes(), "dev", "developer")
+
+	body := `{
+		"username":"dev",
+		"displayName":"林辰",
+		"role":"developer",
+		"status":"disabled",
+		"password":""
+	}`
+	recorder = authedRequest(t, router, adminToken, http.MethodPut, "/api/users/"+strconv.Itoa(int(devID)), body)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PUT /api/users/%d status = %d, body = %s", devID, recorder.Code, recorder.Body.String())
+	}
+
+	recorder = authedRequest(t, router, devToken, http.MethodGet, "/api/projects", "")
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /api/projects with disabled user token status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestReleaseCanBeDeletedWithProjectsAndEvents(t *testing.T) {
 	router := newTestRouter(t)
 	token := login(t, router)
@@ -213,7 +289,12 @@ func authedRequest(t *testing.T, router *gin.Engine, token string, method string
 
 func login(t *testing.T, router *gin.Engine) string {
 	t.Helper()
-	body := bytes.NewBufferString(`{"username":"admin","password":"admin123"}`)
+	return loginAs(t, router, "admin", "admin123")
+}
+
+func loginAs(t *testing.T, router *gin.Engine, username string, password string) string {
+	t.Helper()
+	body := bytes.NewBufferString(`{"username":"` + username + `","password":"` + password + `"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/login", body)
 	req.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
@@ -221,7 +302,7 @@ func login(t *testing.T, router *gin.Engine) string {
 	router.ServeHTTP(recorder, req)
 
 	if recorder.Code != http.StatusOK {
-		t.Fatalf("POST /api/auth/login status = %d, body = %s", recorder.Code, recorder.Body.String())
+		t.Fatalf("POST /api/auth/login as %s status = %d, body = %s", username, recorder.Code, recorder.Body.String())
 	}
 	var payload struct {
 		Token string `json:"token"`
@@ -310,6 +391,41 @@ func assertProjectBusinessLine(t *testing.T, body []byte, code string, businessL
 		}
 	}
 	t.Fatalf("project %s not found in response: %s", code, string(body))
+}
+
+func assertUserRole(t *testing.T, body []byte, username string, role string) uint {
+	t.Helper()
+	var payload []map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode users response: %v", err)
+	}
+	for _, item := range payload {
+		if item["username"] == username {
+			if item["role"] != role {
+				t.Fatalf("user %s role = %v, want %s", username, item["role"], role)
+			}
+			id, ok := item["id"].(float64)
+			if !ok || id == 0 {
+				t.Fatalf("user %s id = %v, want numeric id", username, item["id"])
+			}
+			return uint(id)
+		}
+	}
+	t.Fatalf("user %s not found in response: %s", username, string(body))
+	return 0
+}
+
+func assertUserMissing(t *testing.T, body []byte, username string) {
+	t.Helper()
+	var payload []map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode users response: %v", err)
+	}
+	for _, item := range payload {
+		if item["username"] == username {
+			t.Fatalf("user %s should be absent after deletion", username)
+		}
+	}
 }
 
 func assertReleaseMissing(t *testing.T, body []byte, batchNo string) {

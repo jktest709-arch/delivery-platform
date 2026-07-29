@@ -74,6 +74,23 @@ const businessLinesPayload = [
   },
 ];
 
+const usersPayload = [
+  {
+    id: 1,
+    username: "admin",
+    displayName: "高远",
+    role: "admin",
+    status: "enabled",
+  },
+  {
+    id: 2,
+    username: "release",
+    displayName: "发布经理",
+    role: "release_manager",
+    status: "enabled",
+  },
+];
+
 const releasesPayload = [
   {
     id: 1,
@@ -143,6 +160,9 @@ test("admin can log in and visit every main page without runtime errors", async 
   await page.route("**/api/releases", async (route) => {
     await route.fulfill({ json: releasesPayload });
   });
+  await page.route("**/api/users", async (route) => {
+    await route.fulfill({ json: usersPayload });
+  });
 
   await page.goto("/");
   await page.getByRole("button", { name: "登录" }).click();
@@ -150,13 +170,15 @@ test("admin can log in and visit every main page without runtime errors", async 
   await expect(page.getByRole("heading", { name: "上线单申请" })).toBeVisible();
   await expect(page.getByText("统一认证中心")).toBeVisible();
 
-  for (const tab of ["构建执行台", "项目配置", "Tag 与依赖", "发布历史", "上线单申请"]) {
+  for (const tab of ["构建执行台", "项目配置", "Tag 与依赖", "发布历史", "用户权限", "上线单申请"]) {
     await page.getByRole("button", { name: tab }).click();
     await expect(page.getByRole("heading", { level: 1, name: tab })).toBeVisible();
   }
 
   await page.getByRole("button", { name: "构建执行台" }).click();
   await expect(page.getByRole("button", { name: "删除任务" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Pipeline 流程" })).toBeVisible();
+  await expect(page.getByText("GitLab Tags API")).toBeVisible();
 
   await page.getByRole("button", { name: "项目配置" }).click();
   await expect(page.getByRole("button", { name: "新增项目" })).toBeVisible();
@@ -176,6 +198,10 @@ test("admin can log in and visit every main page without runtime errors", async 
   await page.getByRole("button", { name: "发布历史" }).click();
   await expect(page.getByRole("heading", { name: "PRD-20260729-001" })).toBeVisible();
   await expect(page.getByRole("button", { name: "删除任务" })).toBeVisible();
+
+  await page.getByRole("button", { name: "用户权限" }).click();
+  await expect(page.getByRole("button", { name: "新增用户" })).toBeVisible();
+  await expect(page.getByText("发布经理").first()).toBeVisible();
 
   expect(runtimeErrors).toEqual([]);
 });

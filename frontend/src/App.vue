@@ -11,8 +11,10 @@ import type {
   Release,
   ReleaseProject,
   ReleaseTarget,
+  Role,
   SourceType,
   User,
+  UserPayload,
 } from "./types";
 
 const tabs = [
@@ -21,6 +23,7 @@ const tabs = [
   { key: "projects", label: "项目配置" },
   { key: "rules", label: "Tag 与依赖" },
   { key: "history", label: "发布历史" },
+  { key: "users", label: "用户权限" },
 ];
 
 const statusText: Record<string, string> = {
@@ -46,7 +49,14 @@ const kindText: Record<string, string> = {
   frontend: "前端",
 };
 
+const roleText: Record<Role, string> = {
+  developer: "开发",
+  release_manager: "发布经理",
+  admin: "管理员",
+};
+
 const user = ref<User | null>(null);
+const users = ref<User[]>([]);
 const projects = ref<Project[]>([]);
 const lines = ref<BusinessLine[]>([]);
 const releases = ref<Release[]>([]);
@@ -71,6 +81,9 @@ type SourceForm = {
   sourceRef: string;
 };
 
+type UserForm = UserPayload & {
+  password: string;
+};
 type ProjectForm = ProjectPayload;
 type BusinessLineForm = BusinessLinePayload;
 type DependencyForm = {
@@ -88,6 +101,10 @@ type DependencyRow = {
 const selectedProjectCodes = ref<string[]>([]);
 const sourceForms = reactive<Record<string, SourceForm>>({});
 const dependencyText = reactive<Record<string, string>>({});
+const editingUserId = ref<number | null>(null);
+const userDrafts = reactive<Record<number, UserForm>>({});
+const showNewUserForm = ref(false);
+const newUserForm = reactive<UserForm>(emptyUserForm());
 const editingProjectCode = ref<string | null>(null);
 const projectDrafts = reactive<Record<string, ProjectForm>>({});
 const showNewProjectForm = ref(false);
@@ -108,6 +125,16 @@ const newDependencyForm = reactive<DependencyForm>({
 
 const canOperate = computed(() => {
   return user.value?.role === "release_manager" || user.value?.role === "admin";
+});
+
+const canManageUsers = computed(() => user.value?.role === "admin");
+
+const visibleTabs = computed(() => {
+  return tabs.filter((tab) => tab.key !== "users" || canManageUsers.value);
+});
+
+const currentTabLabel = computed(() => {
+  return visibleTabs.value.find((tab) => tab.key === activeTab.value)?.label ?? "上线单申请";
 });
 
 const currentRelease = computed(() => {
@@ -197,23 +224,31 @@ async function login() {
 function logout() {
   clearToken();
   user.value = null;
+  users.value = [];
   releases.value = [];
   projects.value = [];
   lines.value = [];
+  activeTab.value = "request";
 }
 
 async function loadData() {
-  const [projectResult, lineResult, releaseResult] = await Promise.all([
+  const [projectResult, lineResult, releaseResult, userResult] = await Promise.all([
     api.projects(),
     api.businessLines(),
     api.releases(),
+    canManageUsers.value ? api.users() : Promise.resolve([]),
   ]);
   projects.value = projectResult;
   lines.value = lineResult;
+  users.value = userResult;
   syncProjectState(projectResult);
   syncLineState(lineResult);
+  syncUserState(userResult);
   releases.value = releaseResult;
   selectedReleaseId.value = releaseResult[0]?.id ?? null;
+  if (!canManageUsers.value && activeTab.value === "users") {
+    activeTab.value = "request";
+  }
 }
 
 function syncProjectState(projectResult: Project[]) {
@@ -281,6 +316,18 @@ function syncLineState(lineResult: BusinessLine[]) {
     if (!lineReplacementCodes[line.code] || !options.some((item) => item.code === lineReplacementCodes[line.code])) {
       lineReplacementCodes[line.code] = options[0]?.code ?? "";
     }
+  }
+}
+
+function syncUserState(userResult: User[]) {
+  const activeIds = new Set(userResult.map((item) => item.id));
+  for (const id of Object.keys(userDrafts)) {
+    if (!activeIds.has(Number(id))) {
+      delete userDrafts[Number(id)];
+    }
+  }
+  if (editingUserId.value && !activeIds.has(editingUserId.value)) {
+    editingUserId.value = null;
   }
 }
 
@@ -370,6 +417,101 @@ async function deleteRelease(item: Release) {
     releases.value = nextReleases;
     selectedReleaseId.value = nextReleases[0]?.id ?? null;
     message.value = `${item.batchNo} 已删除`;
+  });
+}
+
+function emptyUserForm(): UserForm {
+  return {
+    username: "",
+    displayName: "",
+    role: "developer",
+    status: "enabled",
+    password: "",
+  };
+}
+
+function userToForm(item: User): UserForm {
+  return {
+    username: item.username,
+    displayName: item.displayName,
+    role: item.role,
+    status: item.status,
+    password: "",
+  };
+}
+
+function userDraft(item: User): UserForm {
+  if (!userDrafts[item.id]) {
+    userDrafts[item.id] = userToForm(item);
+  }
+  return userDrafts[item.id];
+}
+
+function normalizeUserForm(form: UserForm): UserPayload {
+  return {
+    username: form.username.trim(),
+    displayName: form.displayName.trim(),
+    role: form.role,
+    status: form.status,
+    password: form.password.trim() || undefined,
+  };
+}
+
+function openNewUserForm() {
+  Object.assign(newUserForm, emptyUserForm());
+  showNewUserForm.value = true;
+  editingUserId.value = null;
+}
+
+function cancelNewUserForm() {
+  showNewUserForm.value = false;
+}
+
+function startUserEdit(item: User) {
+  userDrafts[item.id] = userToForm(item);
+  editingUserId.value = item.id;
+  showNewUserForm.value = false;
+}
+
+function cancelUserEdit(id: number) {
+  delete userDrafts[id];
+  if (editingUserId.value === id) {
+    editingUserId.value = null;
+  }
+}
+
+async function createUserFromDraft() {
+  const payload = normalizeUserForm(newUserForm);
+  await run(async () => {
+    users.value = await api.createUser(payload);
+    syncUserState(users.value);
+    showNewUserForm.value = false;
+    message.value = `${payload.displayName} 已新增`;
+  });
+}
+
+async function saveUserDraft(item: User) {
+  const payload = normalizeUserForm(userDraft(item));
+  await run(async () => {
+    users.value = await api.updateUser(item.id, payload);
+    syncUserState(users.value);
+    cancelUserEdit(item.id);
+    message.value = `${payload.displayName} 已保存`;
+  });
+}
+
+async function deleteUser(item: User) {
+  if (user.value?.id === item.id) {
+    error.value = "不能删除当前登录用户";
+    return;
+  }
+  if (!window.confirm(`确认删除用户 ${item.displayName}？`)) {
+    return;
+  }
+  await run(async () => {
+    users.value = await api.deleteUser(item.id);
+    syncUserState(users.value);
+    message.value = `${item.displayName} 已删除`;
   });
 }
 
@@ -739,6 +881,57 @@ async function deleteDependency(project: Project, dependencyCode: string) {
   });
 }
 
+function tagStepState(row: ReleaseProject) {
+  if (row.targetTag && row.status !== "pending") {
+    return "done";
+  }
+  return row.targetTag ? "ready" : "pending";
+}
+
+function packageStepState(row: ReleaseProject) {
+  if (row.status === "build_failed") {
+    return "failed";
+  }
+  if (row.status === "building") {
+    return "running";
+  }
+  if (["build_success", "deploying", "deploy_success", "deploy_failed"].includes(row.status)) {
+    return "done";
+  }
+  return "pending";
+}
+
+function deployStepState(row: ReleaseProject) {
+  if (row.status === "deploy_failed") {
+    return "failed";
+  }
+  if (row.status === "deploying") {
+    return "running";
+  }
+  if (row.status === "deploy_success") {
+    return "done";
+  }
+  return "pending";
+}
+
+function pipelineStepLabel(state: string) {
+  const labels: Record<string, string> = {
+    pending: "待触发",
+    ready: "已生成",
+    running: "执行中",
+    done: "完成",
+    failed: "失败",
+  };
+  return labels[state] ?? state;
+}
+
+function pipelineUrl(row: ReleaseProject, id: string) {
+  if (!id || !row.project.gitlabUrl) {
+    return "";
+  }
+  return `${row.project.gitlabUrl.replace(/\/$/, "")}/-/pipelines/${encodeURIComponent(id)}`;
+}
+
 function upsertRelease(updated: Release) {
   const index = releases.value.findIndex((item) => item.id === updated.id);
   if (index >= 0) {
@@ -801,7 +994,7 @@ function statusLabel(status: string) {
         <strong>统一交付平台</strong>
       </div>
       <button
-        v-for="tab in tabs"
+        v-for="tab in visibleTabs"
         :key="tab.key"
         :class="{ active: activeTab === tab.key }"
         @click="activeTab = tab.key"
@@ -814,7 +1007,7 @@ function statusLabel(status: string) {
       <header class="topbar">
         <div>
           <p class="eyebrow">Production Delivery</p>
-          <h1>{{ tabs.find((tab) => tab.key === activeTab)?.label }}</h1>
+          <h1>{{ currentTabLabel }}</h1>
         </div>
         <div class="userbar">
           <span>{{ user.displayName }}</span>
@@ -934,6 +1127,42 @@ function statusLabel(status: string) {
             <div>
               <small>申请人</small>
               <strong>{{ currentRelease.applicant?.displayName }}</strong>
+            </div>
+          </div>
+
+          <div class="pipeline-flow">
+            <div class="section-head compact-head">
+              <h2>Pipeline 流程</h2>
+              <small>GitLab Tags API -> Pipeline API(package) -> Pipeline API(deploy)</small>
+            </div>
+            <div class="pipeline-list">
+              <article v-for="row in currentRelease.projects" :key="row.id" class="pipeline-row">
+                <div>
+                  <strong>{{ row.project.name }}</strong>
+                  <small>{{ row.project.gitlabProjectId }}</small>
+                </div>
+                <div class="pipeline-step" :class="tagStepState(row)">
+                  <span>{{ pipelineStepLabel(tagStepState(row)) }}</span>
+                  <strong>创建 Tag</strong>
+                  <code>{{ row.targetTag || "-" }}</code>
+                </div>
+                <div class="pipeline-step" :class="packageStepState(row)">
+                  <span>{{ pipelineStepLabel(packageStepState(row)) }}</span>
+                  <strong>打包 Pipeline</strong>
+                  <a v-if="row.buildJobId" :href="pipelineUrl(row, row.buildJobId)" target="_blank">
+                    #{{ row.buildJobId }}
+                  </a>
+                  <small v-else>{{ row.project.packageJob }}</small>
+                </div>
+                <div class="pipeline-step" :class="deployStepState(row)">
+                  <span>{{ pipelineStepLabel(deployStepState(row)) }}</span>
+                  <strong>部署 Pipeline</strong>
+                  <a v-if="row.deployJobId" :href="pipelineUrl(row, row.deployJobId)" target="_blank">
+                    #{{ row.deployJobId }}
+                  </a>
+                  <small v-else>{{ row.project.deployJob }}</small>
+                </div>
+              </article>
             </div>
           </div>
 
@@ -1364,6 +1593,114 @@ function statusLabel(status: string) {
                       @click="deleteDependency(row.project, row.dependencyCode)"
                     >
                       删除整行
+                    </button>
+                  </template>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section v-if="activeTab === 'users'" class="panel">
+        <div class="section-head">
+          <h2>用户权限</h2>
+          <button class="primary" :disabled="loading" @click="openNewUserForm">新增用户</button>
+        </div>
+
+        <form v-if="showNewUserForm" class="config-form" @submit.prevent="createUserFromDraft">
+          <div class="config-grid">
+            <label>
+              <span>用户名</span>
+              <input v-model="newUserForm.username" required />
+            </label>
+            <label>
+              <span>姓名</span>
+              <input v-model="newUserForm.displayName" required />
+            </label>
+            <label>
+              <span>角色</span>
+              <select v-model="newUserForm.role">
+                <option value="developer">开发</option>
+                <option value="release_manager">发布经理</option>
+                <option value="admin">管理员</option>
+              </select>
+            </label>
+            <label>
+              <span>状态</span>
+              <select v-model="newUserForm.status">
+                <option value="enabled">启用</option>
+                <option value="disabled">禁用</option>
+              </select>
+            </label>
+            <label>
+              <span>初始密码</span>
+              <input v-model="newUserForm.password" type="password" required />
+            </label>
+          </div>
+          <div class="actions compact">
+            <button type="button" :disabled="loading" @click="cancelNewUserForm">取消</button>
+            <button class="primary" :disabled="loading" type="submit">保存新增</button>
+          </div>
+        </form>
+
+        <div class="table-wrap config-table">
+          <table>
+            <thead>
+              <tr>
+                <th>用户名</th>
+                <th>姓名</th>
+                <th>角色</th>
+                <th>状态</th>
+                <th>重置密码</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="item in users" :key="item.id">
+                <td>
+                  <strong>{{ item.username }}</strong>
+                  <small>ID: {{ item.id }}</small>
+                </td>
+                <td>
+                  <input v-if="editingUserId === item.id" v-model="userDraft(item).displayName" />
+                  <span v-else>{{ item.displayName }}</span>
+                </td>
+                <td>
+                  <select v-if="editingUserId === item.id" v-model="userDraft(item).role">
+                    <option value="developer">开发</option>
+                    <option value="release_manager">发布经理</option>
+                    <option value="admin">管理员</option>
+                  </select>
+                  <span v-else>{{ roleText[item.role] }}</span>
+                </td>
+                <td>
+                  <select v-if="editingUserId === item.id" v-model="userDraft(item).status">
+                    <option value="enabled">启用</option>
+                    <option value="disabled">禁用</option>
+                  </select>
+                  <span v-else class="status" :class="item.status === 'enabled' ? 'deploy_success' : 'pending'">
+                    {{ item.status === "enabled" ? "启用" : "禁用" }}
+                  </span>
+                </td>
+                <td>
+                  <input
+                    v-if="editingUserId === item.id"
+                    v-model="userDraft(item).password"
+                    placeholder="留空不修改"
+                    type="password"
+                  />
+                  <span v-else>-</span>
+                </td>
+                <td class="inline-actions">
+                  <template v-if="editingUserId === item.id">
+                    <button class="primary" :disabled="loading" @click="saveUserDraft(item)">保存</button>
+                    <button :disabled="loading" @click="cancelUserEdit(item.id)">取消</button>
+                  </template>
+                  <template v-else>
+                    <button :disabled="loading" @click="startUserEdit(item)">编辑</button>
+                    <button class="danger-button" :disabled="loading || item.id === user.id" @click="deleteUser(item)">
+                      删除
                     </button>
                   </template>
                 </td>

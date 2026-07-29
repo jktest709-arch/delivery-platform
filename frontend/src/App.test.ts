@@ -76,6 +76,23 @@ const businessLinesPayload = [
   },
 ];
 
+const usersPayload = [
+  {
+    id: 1,
+    username: "admin",
+    displayName: "高远",
+    role: "admin",
+    status: "enabled",
+  },
+  {
+    id: 2,
+    username: "release",
+    displayName: "发布经理",
+    role: "release_manager",
+    status: "enabled",
+  },
+];
+
 const releasesPayload = [
   {
     id: 1,
@@ -149,6 +166,9 @@ describe("App", () => {
     await wrapper.findAll("button").find((item) => item.text() === "构建执行台")!.trigger("click");
     expect(wrapper.text()).toContain("PRD-20260729-001");
     expect(wrapper.text()).toContain("删除任务");
+    expect(wrapper.text()).toContain("Pipeline 流程");
+    expect(wrapper.text()).toContain("GitLab Tags API");
+    expect(wrapper.text()).toContain("打包 Pipeline");
 
     await wrapper.findAll("button").find((item) => item.text() === "项目配置")!.trigger("click");
     expect(wrapper.text()).toContain("新增项目");
@@ -180,6 +200,11 @@ describe("App", () => {
     expect(wrapper.text()).toContain("PRD-20260729-001");
     expect(wrapper.text()).toContain("删除任务");
 
+    await wrapper.findAll("button").find((item) => item.text() === "用户权限")!.trigger("click");
+    expect(wrapper.text()).toContain("新增用户");
+    expect(wrapper.text()).toContain("发布经理");
+    expect(wrapper.text()).toContain("管理员");
+
     expect(consoleError).not.toHaveBeenCalled();
   });
 });
@@ -208,6 +233,9 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
   }
   if (method === "GET" && url.endsWith("/api/releases")) {
     return jsonResponse(releasesPayload);
+  }
+  if (method === "GET" && url.endsWith("/api/users")) {
+    return jsonResponse(usersPayload);
   }
 
   return jsonResponse({ message: `Unhandled request: ${method} ${url}` }, 404);

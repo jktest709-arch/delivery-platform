@@ -7,6 +7,7 @@ import type {
   Release,
   ReleaseTarget,
   User,
+  UserPayload,
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
@@ -52,6 +53,24 @@ export const api = {
   },
   me() {
     return request<User>("/me");
+  },
+  users() {
+    return request<User[]>("/users");
+  },
+  createUser(user: UserPayload) {
+    return request<User[]>("/users", {
+      method: "POST",
+      body: JSON.stringify(user),
+    });
+  },
+  updateUser(id: number, user: UserPayload) {
+    return request<User[]>(`/users/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(user),
+    });
+  },
+  deleteUser(id: number) {
+    return request<User[]>(`/users/${id}`, { method: "DELETE" });
   },
   projects() {
     return request<Project[]>("/projects");

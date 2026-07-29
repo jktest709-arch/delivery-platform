@@ -230,6 +230,10 @@ code {
   margin-bottom: 14px;
 }
 
+.compact-head {
+  margin-bottom: 10px;
+}
+
 .head-actions {
   display: flex;
   align-items: center;
@@ -377,6 +381,61 @@ tr:last-child td {
 .release-summary strong {
   display: block;
   margin-top: 4px;
+}
+
+.pipeline-flow {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+  margin-bottom: 14px;
+  padding: 12px;
+}
+
+.pipeline-list {
+  display: grid;
+  gap: 8px;
+}
+
+.pipeline-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) repeat(3, minmax(160px, 1fr));
+  gap: 8px;
+  align-items: stretch;
+}
+
+.pipeline-step {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 9px;
+}
+
+.pipeline-step span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.pipeline-step.done {
+  border-color: #b7e2c7;
+  background: var(--green-bg);
+}
+
+.pipeline-step.running {
+  border-color: #aac8ff;
+  background: #e8f1ff;
+}
+
+.pipeline-step.failed {
+  border-color: #f0b7b2;
+  background: var(--red-bg);
+}
+
+.pipeline-step.ready {
+  border-color: #cbd5e1;
+  background: #ffffff;
 }
 
 .inline-actions {

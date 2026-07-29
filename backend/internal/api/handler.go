@@ -25,6 +25,14 @@ type loginRequest struct {
 	Password string `json:"password"`
 }
 
+type userRequest struct {
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName"`
+	Role        string `json:"role"`
+	Status      string `json:"status"`
+	Password    string `json:"password"`
+}
+
 type projectDTO struct {
 	model.Project
 	BusinessLineCode string   `json:"businessLineCode"`
@@ -84,6 +92,135 @@ func (h Handler) login(c *gin.Context) {
 
 func (h Handler) me(c *gin.Context) {
 	c.JSON(http.StatusOK, currentUser(c))
+}
+
+func (h Handler) listUsers(c *gin.Context) {
+	var users []model.User
+	if err := h.db.Order("username asc").Find(&users).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, users)
+}
+
+func (h Handler) createUser(c *gin.Context) {
+	var req userRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	username := strings.TrimSpace(req.Username)
+	if username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "用户名不能为空"})
+		return
+	}
+	if strings.TrimSpace(req.Password) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "密码不能为空"})
+		return
+	}
+	updates, err := userUpdates(req, true)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	var existing model.User
+	err = h.db.Where("username = ?", username).First(&existing).Error
+	if err == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "用户名已存在"})
+		return
+	}
+	if err != gorm.ErrRecordNotFound {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	user := model.User{
+		Username:     username,
+		DisplayName:  updates["display_name"].(string),
+		PasswordHash: updates["password_hash"].(string),
+		Role:         updates["role"].(string),
+		Status:       updates["status"].(string),
+	}
+	if err := h.db.Create(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	h.listUsers(c)
+}
+
+func (h Handler) updateUser(c *gin.Context) {
+	userID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+	var req userRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	updates, err := userUpdates(req, false)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	current := currentUser(c)
+	if userID == current.ID {
+		if status, ok := updates["status"].(string); ok && status != "enabled" {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "不能禁用当前登录用户"})
+			return
+		}
+	}
+	result := h.db.Model(&model.User{}).Where("id = ?", userID).Updates(updates)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": result.Error.Error()})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"message": "用户不存在"})
+		return
+	}
+	h.listUsers(c)
+}
+
+func (h Handler) deleteUser(c *gin.Context) {
+	userID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+	if userID == currentUser(c).ID {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "不能删除当前登录用户"})
+		return
+	}
+	var usageCount int64
+	if err := h.db.Model(&model.Release{}).
+		Where("applicant_id = ? OR approver_id = ?", userID, userID).
+		Count(&usageCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if usageCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "用户已存在上线记录，请改为禁用"})
+		return
+	}
+	if err := h.db.Model(&model.ReleaseEvent{}).
+		Where("operator_id = ?", userID).
+		Count(&usageCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if usageCount > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "用户已存在操作记录，请改为禁用"})
+		return
+	}
+	result := h.db.Delete(&model.User{}, userID)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": result.Error.Error()})
+		return
+	}
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"message": "用户不存在"})
+		return
+	}
+	h.listUsers(c)
 }
 
 func (h Handler) listProjects(c *gin.Context) {
@@ -552,6 +689,42 @@ func (h Handler) businessLineUpdates(req businessLineRequest) (map[string]interf
 	}, nil
 }
 
+func userUpdates(req userRequest, requirePassword bool) (map[string]interface{}, error) {
+	displayName := strings.TrimSpace(req.DisplayName)
+	if displayName == "" {
+		return nil, errMessage("姓名不能为空")
+	}
+	role := strings.TrimSpace(req.Role)
+	if role != model.RoleDeveloper && role != model.RoleReleaseManager && role != model.RoleAdmin {
+		return nil, errMessage("角色只能是 developer、release_manager 或 admin")
+	}
+	status := strings.TrimSpace(req.Status)
+	if status == "" {
+		status = "enabled"
+	}
+	if status != "enabled" && status != "disabled" {
+		return nil, errMessage("状态只能是 enabled 或 disabled")
+	}
+	updates := map[string]interface{}{
+		"display_name": displayName,
+		"role":         role,
+		"status":       status,
+	}
+	password := strings.TrimSpace(req.Password)
+	if password == "" {
+		if requirePassword {
+			return nil, errMessage("密码不能为空")
+		}
+		return updates, nil
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return nil, err
+	}
+	updates["password_hash"] = hash
+	return updates, nil
+}
+
 type errMessage string
 
 func (e errMessage) Error() string {
@@ -591,8 +764,8 @@ func (h Handler) requireAuth() gin.HandlerFunc {
 		}
 
 		var user model.User
-		if err := h.db.First(&user, claims.UserID).Error; err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "用户不存在"})
+		if err := h.db.Where("status = ?", "enabled").First(&user, claims.UserID).Error; err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "用户不存在或已禁用"})
 			return
 		}
 		c.Set("user", user)
