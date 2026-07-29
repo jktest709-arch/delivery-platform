@@ -212,6 +212,50 @@ func TestBuildOnlyProjectDoesNotRequireDeployJob(t *testing.T) {
 	}
 }
 
+func TestPackageOneRetriesLatestBuildJob(t *testing.T) {
+	db := newServiceTestDB(t)
+	var applicant model.User
+	if err := db.Where("username = ?", "admin").First(&applicant).Error; err != nil {
+		t.Fatalf("find applicant: %v", err)
+	}
+	client := &fakeGitLabClient{
+		jobs: []gitlab.JobResponse{
+			{ID: "201", Name: "build-image", Stage: "build", Status: "failed", WebURL: "https://gitlab/jobs/201"},
+			{ID: "301", Name: "deploy-prod", Stage: "deploy", Status: "manual", WebURL: "https://gitlab/jobs/301", Manual: true},
+		},
+	}
+	service := NewService(db, client)
+
+	created, err := service.Create(context.Background(), CreateRequest{
+		BusinessLineCode: "ops",
+		ReleaseWindow:    time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC),
+		Projects: []CreateProjectRequest{
+			{ProjectCode: "base-auth", SourceType: "branch", SourceRef: "master"},
+		},
+	}, applicant)
+	if err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+	tagged, err := service.CreateTags(context.Background(), created.ID, applicant)
+	if err == nil {
+		t.Fatal("create tags succeeded unexpectedly with failed auto build")
+	}
+	if len(client.retried) != 0 {
+		t.Fatalf("retried during tag = %v, want none", client.retried)
+	}
+
+	updated, err := service.PackageOne(context.Background(), tagged.ID, tagged.Projects[0].ID, applicant)
+	if err != nil {
+		t.Fatalf("package one retry: %v", err)
+	}
+	if len(client.retried) != 1 || client.retried[0] != "201" {
+		t.Fatalf("retried jobs = %v, want [201]", client.retried)
+	}
+	if updated.Projects[0].Status != model.ProjectStatusBuilding {
+		t.Fatalf("project status = %s, want building", updated.Projects[0].Status)
+	}
+}
+
 func newServiceTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
@@ -232,7 +276,9 @@ type fakeGitLabClient struct {
 	jobsByProject  map[string][][]gitlab.JobResponse
 	listCalls      map[string]int
 	played         []string
+	retried        []string
 	taggedProjects []string
+	trace          string
 }
 
 func (f *fakeGitLabClient) CreateTag(_ context.Context, projectID string, _ string, _ string) error {
@@ -270,6 +316,26 @@ func (f *fakeGitLabClient) PlayJob(_ context.Context, _ string, jobID string) (g
 		}
 	}
 	return gitlab.JobResponse{ID: jobID, Status: "running"}, nil
+}
+
+func (f *fakeGitLabClient) RetryJob(_ context.Context, _ string, jobID string) (gitlab.JobResponse, error) {
+	f.retried = append(f.retried, jobID)
+	for index := range f.jobs {
+		if f.jobs[index].ID == jobID {
+			f.jobs[index].ID = jobID + "1"
+			f.jobs[index].Status = "running"
+			f.jobs[index].Manual = false
+			return f.jobs[index], nil
+		}
+	}
+	return gitlab.JobResponse{ID: jobID, Status: "running"}, nil
+}
+
+func (f *fakeGitLabClient) GetJobTrace(context.Context, string, string) (string, error) {
+	if f.trace != "" {
+		return f.trace, nil
+	}
+	return "fake trace\n", nil
 }
 
 func cloneJobs(jobs []gitlab.JobResponse) []gitlab.JobResponse {

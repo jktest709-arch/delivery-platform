@@ -561,6 +561,27 @@ func (h Handler) getRelease(c *gin.Context) {
 	c.JSON(http.StatusOK, item)
 }
 
+func (h Handler) getReleaseJobTrace(c *gin.Context) {
+	releaseID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+	releaseProjectID, ok := parseUintParam(c, "releaseProjectId")
+	if !ok {
+		return
+	}
+	jobID, ok := parseUintParam(c, "jobId")
+	if !ok {
+		return
+	}
+	trace, err := h.releaseService.JobTrace(c.Request.Context(), releaseID, releaseProjectID, jobID)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"trace": trace})
+}
+
 func (h Handler) deleteRelease(c *gin.Context) {
 	releaseID, ok := parseUintParam(c, "id")
 	if !ok {

@@ -193,26 +193,61 @@ func (c *Client) PlayJob(ctx context.Context, projectID, jobID string) (JobRespo
 	}
 	req.Header.Set("PRIVATE-TOKEN", c.token)
 
-	var payload struct {
-		ID           int    `json:"id"`
-		Name         string `json:"name"`
-		Stage        string `json:"stage"`
-		Status       string `json:"status"`
-		WebURL       string `json:"web_url"`
-		AllowFailure bool   `json:"allow_failure"`
-	}
+	var payload jobPayload
 	if err := c.do(req, &payload); err != nil {
 		return JobResponse{}, fmt.Errorf("play job %q in GitLab project %q: %w", jobID, projectID, err)
 	}
-	return JobResponse{
-		ID:           strconv.Itoa(payload.ID),
-		Name:         payload.Name,
-		Stage:        payload.Stage,
-		Status:       payload.Status,
-		WebURL:       payload.WebURL,
-		AllowFailure: payload.AllowFailure,
-		Manual:       payload.Status == "manual",
-	}, nil
+	return jobFromPayload(payload), nil
+}
+
+func (c *Client) RetryJob(ctx context.Context, projectID, jobID string) (JobResponse, error) {
+	if c.dryRun {
+		return JobResponse{
+			ID:     jobID,
+			Name:   jobID,
+			Stage:  jobID,
+			Status: "running",
+			WebURL: fmt.Sprintf("%s/%s/-/jobs/%s", c.baseURL, projectID, jobID),
+		}, nil
+	}
+	if c.token == "" {
+		return JobResponse{}, fmt.Errorf("GITLAB_TOKEN is required when GITLAB_DRY_RUN=false")
+	}
+
+	endpoint := fmt.Sprintf("%s/api/v4/projects/%s/jobs/%s/retry", c.baseURL, url.PathEscape(projectID), url.PathEscape(jobID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return JobResponse{}, err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+
+	var payload jobPayload
+	if err := c.do(req, &payload); err != nil {
+		return JobResponse{}, fmt.Errorf("retry job %q in GitLab project %q: %w", jobID, projectID, err)
+	}
+	return jobFromPayload(payload), nil
+}
+
+func (c *Client) GetJobTrace(ctx context.Context, projectID, jobID string) (string, error) {
+	if c.dryRun {
+		return fmt.Sprintf("dry-run trace for GitLab project %s job %s\n", projectID, jobID), nil
+	}
+	if c.token == "" {
+		return "", fmt.Errorf("GITLAB_TOKEN is required when GITLAB_DRY_RUN=false")
+	}
+
+	endpoint := fmt.Sprintf("%s/api/v4/projects/%s/jobs/%s/trace", c.baseURL, url.PathEscape(projectID), url.PathEscape(jobID))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("PRIVATE-TOKEN", c.token)
+
+	data, err := c.doBytes(req)
+	if err != nil {
+		return "", fmt.Errorf("get trace for job %q in GitLab project %q: %w", jobID, projectID, err)
+	}
+	return string(data), nil
 }
 
 func normalizeBaseURL(baseURL string) string {
@@ -228,20 +263,28 @@ func isForbiddenError(err error) bool {
 }
 
 func (c *Client) do(req *http.Request, out interface{}) error {
-	resp, err := c.http.Do(req)
+	data, err := c.doBytes(req)
 	if err != nil {
 		return err
-	}
-	defer resp.Body.Close()
-
-	data, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("gitlab api %s %s returned %s: %s", req.Method, req.URL.Redacted(), resp.Status, gitLabErrorMessage(data, resp.StatusCode))
 	}
 	if out == nil || len(data) == 0 {
 		return nil
 	}
 	return json.Unmarshal(data, out)
+}
+
+func (c *Client) doBytes(req *http.Request) ([]byte, error) {
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("gitlab api %s %s returned %s: %s", req.Method, req.URL.Redacted(), resp.Status, gitLabErrorMessage(data, resp.StatusCode))
+	}
+	return data, nil
 }
 
 func gitLabErrorMessage(data []byte, statusCode int) string {
@@ -275,4 +318,25 @@ func gitLabErrorMessage(data []byte, statusCode int) string {
 		}
 	}
 	return body
+}
+
+type jobPayload struct {
+	ID           int    `json:"id"`
+	Name         string `json:"name"`
+	Stage        string `json:"stage"`
+	Status       string `json:"status"`
+	WebURL       string `json:"web_url"`
+	AllowFailure bool   `json:"allow_failure"`
+}
+
+func jobFromPayload(payload jobPayload) JobResponse {
+	return JobResponse{
+		ID:           strconv.Itoa(payload.ID),
+		Name:         payload.Name,
+		Stage:        payload.Stage,
+		Status:       payload.Status,
+		WebURL:       payload.WebURL,
+		AllowFailure: payload.AllowFailure,
+		Manual:       payload.Status == "manual",
+	}
 }

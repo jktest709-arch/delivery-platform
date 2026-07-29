@@ -124,6 +124,17 @@ const newDependencyForm = reactive<DependencyForm>({
   projectCode: "",
   dependencyCode: "",
 });
+const jobLog = reactive({
+  open: false,
+  loading: false,
+  title: "",
+  trace: "",
+  error: "",
+  gitlabUrl: "",
+  releaseId: 0,
+  releaseProjectId: 0,
+  jobId: 0,
+});
 
 const canOperate = computed(() => {
   return user.value?.role === "release_manager" || user.value?.role === "admin";
@@ -511,8 +522,44 @@ async function projectAction(row: ReleaseProject, action: "package" | "deploy") 
         ? await api.packageProject(currentRelease.value!.id, row.id)
         : await api.deployProject(currentRelease.value!.id, row.id);
     upsertRelease(updated);
-    message.value = `${row.project.name} 已触发${action === "package" ? "构建" : "部署"}`;
+    message.value = `${row.project.name} 已触发${action === "package" ? "重新构建" : "部署"}`;
   });
+}
+
+async function openJobLog(row: ReleaseProject, job: PipelineJob) {
+  if (!currentRelease.value) {
+    return;
+  }
+  jobLog.open = true;
+  jobLog.loading = true;
+  jobLog.title = `${row.project.name} / ${job.name}`;
+  jobLog.trace = "";
+  jobLog.error = "";
+  jobLog.gitlabUrl = jobUrl(row, job);
+  jobLog.releaseId = currentRelease.value.id;
+  jobLog.releaseProjectId = row.id;
+  jobLog.jobId = job.id;
+  await refreshJobLog();
+}
+
+async function refreshJobLog() {
+  if (!jobLog.open || !jobLog.releaseId || !jobLog.releaseProjectId || !jobLog.jobId) {
+    return;
+  }
+  jobLog.loading = true;
+  jobLog.error = "";
+  try {
+    const result = await api.jobTrace(jobLog.releaseId, jobLog.releaseProjectId, jobLog.jobId);
+    jobLog.trace = result.trace || "暂无日志";
+  } catch (err) {
+    jobLog.error = err instanceof Error ? err.message : "日志加载失败";
+  } finally {
+    jobLog.loading = false;
+  }
+}
+
+function closeJobLog() {
+  jobLog.open = false;
 }
 
 async function deleteRelease(item: Release) {
@@ -1049,13 +1096,10 @@ function pipelineUrl(row: ReleaseProject, id: string) {
 }
 
 function jobUrl(row: ReleaseProject, job: PipelineJob) {
-  if (job.webUrl) {
-    return job.webUrl;
+  if (job.gitlabJobId && row.project.gitlabUrl) {
+    return `${row.project.gitlabUrl.replace(/\/$/, "")}/-/jobs/${encodeURIComponent(job.gitlabJobId)}`;
   }
-  if (!job.gitlabJobId || !row.project.gitlabUrl) {
-    return "";
-  }
-  return `${row.project.gitlabUrl.replace(/\/$/, "")}/-/jobs/${encodeURIComponent(job.gitlabJobId)}`;
+  return job.webUrl || "";
 }
 
 function actionJobs(row: ReleaseProject, action: "package" | "deploy") {
@@ -1351,9 +1395,12 @@ function statusLabel(status: string) {
                   <span>{{ pipelineStepLabel(packageStepState(row)) }}</span>
                   <strong>构建 Jobs</strong>
                   <div v-if="actionJobs(row, 'package').length" class="job-list">
-                    <a v-for="job in actionJobs(row, 'package')" :key="job.id" :href="jobUrl(row, job)" target="_blank">
-                      {{ job.name }} · {{ jobStatusLabel(job.status) }}
-                    </a>
+                    <div v-for="job in actionJobs(row, 'package')" :key="job.id" class="job-item">
+                      <button type="button" class="job-log-button" @click="openJobLog(row, job)">
+                        {{ job.name }} · {{ jobStatusLabel(job.status) }}
+                      </button>
+                      <a v-if="jobUrl(row, job)" :href="jobUrl(row, job)" target="_blank">GitLab</a>
+                    </div>
                   </div>
                   <small v-else>等待 Pipeline jobs</small>
                 </div>
@@ -1361,9 +1408,12 @@ function statusLabel(status: string) {
                   <span>{{ pipelineStepLabel(deployStepState(row)) }}</span>
                   <strong>部署 Jobs</strong>
                   <div v-if="actionJobs(row, 'deploy').length" class="job-list">
-                    <a v-for="job in actionJobs(row, 'deploy')" :key="job.id" :href="jobUrl(row, job)" target="_blank">
-                      {{ job.name }} · {{ jobStatusLabel(job.status) }}
-                    </a>
+                    <div v-for="job in actionJobs(row, 'deploy')" :key="job.id" class="job-item">
+                      <button type="button" class="job-log-button" @click="openJobLog(row, job)">
+                        {{ job.name }} · {{ jobStatusLabel(job.status) }}
+                      </button>
+                      <a v-if="jobUrl(row, job)" :href="jobUrl(row, job)" target="_blank">GitLab</a>
+                    </div>
                   </div>
                   <small v-else>等待 deploy job</small>
                 </div>
@@ -1413,7 +1463,7 @@ function statusLabel(status: string) {
                     <span class="status" :class="row.status">{{ statusLabel(row.status) }}</span>
                   </td>
                   <td class="inline-actions">
-                    <button :disabled="!canOperate || loading" @click="projectAction(row, 'package')">构建</button>
+                    <button :disabled="!canOperate || loading" @click="projectAction(row, 'package')">重新构建</button>
                     <button v-if="hasDeployJobs(row)" :disabled="!canOperate || loading" @click="projectAction(row, 'deploy')">
                       部署
                     </button>
@@ -1993,5 +2043,23 @@ function statusLabel(status: string) {
         </div>
       </section>
     </section>
+
+    <div v-if="jobLog.open" class="modal-backdrop" @click.self="closeJobLog">
+      <section class="log-dialog">
+        <div class="section-head compact-head">
+          <div>
+            <h2>{{ jobLog.title }}</h2>
+            <small>Job 日志</small>
+          </div>
+          <div class="head-actions">
+            <button :disabled="jobLog.loading" @click="refreshJobLog">刷新日志</button>
+            <a v-if="jobLog.gitlabUrl" class="link-button" :href="jobLog.gitlabUrl" target="_blank">GitLab</a>
+            <button @click="closeJobLog">关闭</button>
+          </div>
+        </div>
+        <div v-if="jobLog.error" class="notice danger">{{ jobLog.error }}</div>
+        <pre class="job-trace">{{ jobLog.loading ? "日志加载中..." : jobLog.trace || "暂无日志" }}</pre>
+      </section>
+    </div>
   </main>
 </template>

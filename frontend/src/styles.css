@@ -457,12 +457,37 @@ tr:last-child td {
   gap: 4px;
 }
 
-.job-list a {
+.job-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.job-item a {
   overflow: hidden;
   color: #184c99;
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.job-log-button {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: #184c99;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 0;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.job-log-button:hover {
+  text-decoration: underline;
 }
 
 .inline-actions {
@@ -496,6 +521,57 @@ tr:last-child td {
 .status.partial_failed {
   background: var(--red-bg);
   color: var(--red);
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(15 23 42 / 42%);
+  padding: 24px;
+  z-index: 20;
+}
+
+.log-dialog {
+  width: min(980px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 16px;
+  box-shadow: 0 20px 45px rgb(15 23 42 / 22%);
+}
+
+.link-button {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+  min-height: 36px;
+  padding: 0 12px;
+  text-decoration: none;
+}
+
+.job-trace {
+  min-height: 360px;
+  margin: 0;
+  overflow: auto;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #dbeafe;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .config-form {

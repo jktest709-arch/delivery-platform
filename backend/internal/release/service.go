@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,8 @@ type GitLabClient interface {
 	FindPipelineByRef(ctx context.Context, projectID, ref string) (gitlab.PipelineResponse, error)
 	ListPipelineJobs(ctx context.Context, projectID, pipelineID string) ([]gitlab.JobResponse, error)
 	PlayJob(ctx context.Context, projectID, jobID string) (gitlab.JobResponse, error)
+	RetryJob(ctx context.Context, projectID, jobID string) (gitlab.JobResponse, error)
+	GetJobTrace(ctx context.Context, projectID, jobID string) (string, error)
 }
 
 type Service struct {
@@ -187,7 +190,7 @@ func (s *Service) Deploy(ctx context.Context, releaseID uint, target string, ope
 }
 
 func (s *Service) PackageOne(ctx context.Context, releaseID uint, releaseProjectID uint, operator model.User) (model.Release, error) {
-	return s.runOne(ctx, releaseID, releaseProjectID, operator, "package")
+	return s.runOne(ctx, releaseID, releaseProjectID, operator, "rebuild")
 }
 
 func (s *Service) DeployOne(ctx context.Context, releaseID uint, releaseProjectID uint, operator model.User) (model.Release, error) {
@@ -259,6 +262,27 @@ func (s *Service) SyncPipelines(ctx context.Context, releaseID uint) (model.Rele
 		}
 	}
 	return s.Get(ctx, releaseID)
+}
+
+func (s *Service) JobTrace(ctx context.Context, releaseID uint, releaseProjectID uint, releaseJobID uint) (string, error) {
+	if s.gitlab == nil {
+		return "", fmt.Errorf("gitlab client is not configured")
+	}
+	var releaseProject model.ReleaseProject
+	if err := s.db.WithContext(ctx).
+		Preload("Project").
+		Where("id = ? AND release_id = ?", releaseProjectID, releaseID).
+		First(&releaseProject).Error; err != nil {
+		return "", err
+	}
+
+	var job model.ReleasePipelineJob
+	if err := s.db.WithContext(ctx).
+		Where("id = ? AND release_project_id = ?", releaseJobID, releaseProjectID).
+		First(&job).Error; err != nil {
+		return "", err
+	}
+	return s.gitlab.GetJobTrace(ctx, releaseProject.Project.GitLabProjectID, job.GitLabJobID)
 }
 
 func (s *Service) Delete(ctx context.Context, id uint) error {
@@ -380,11 +404,15 @@ func (s *Service) playJobs(ctx context.Context, tx *gorm.DB, item model.ReleaseP
 	if err != nil {
 		return s.markActionFailed(tx, item.ID, action, err)
 	}
-	matchingJobs := filterActionJobs(jobs, action)
+	jobAction := actionJobKind(action)
+	matchingJobs := filterActionJobs(jobs, jobAction)
 	if len(matchingJobs) == 0 {
 		return s.markActionFailed(tx, item.ID, action, fmt.Errorf("未找到可匹配的%s job", actionLabel(action)))
 	}
 	playableJobs := filterPlayableJobs(matchingJobs)
+	if action == "rebuild" {
+		return s.rebuildJobs(ctx, tx, item, jobs, matchingJobs, playableJobs)
+	}
 	if len(playableJobs) == 0 {
 		if err := s.replacePipelineJobs(tx, item.ID, jobs); err != nil {
 			return err
@@ -406,6 +434,36 @@ func (s *Service) playJobs(ctx context.Context, tx *gorm.DB, item model.ReleaseP
 	refreshedJobs, err := s.gitlab.ListPipelineJobs(ctx, item.Project.GitLabProjectID, item.PipelineID)
 	if err != nil {
 		return s.markActionFailed(tx, item.ID, action, err)
+	}
+	return s.updateReleaseProjectFromJobs(tx, item.ID, item.PipelineID, refreshedJobs, "")
+}
+
+func (s *Service) rebuildJobs(ctx context.Context, tx *gorm.DB, item model.ReleaseProject, jobs []gitlab.JobResponse, matchingJobs []gitlab.JobResponse, playableJobs []gitlab.JobResponse) error {
+	if len(playableJobs) > 0 {
+		for _, job := range playableJobs {
+			if _, err := s.gitlab.PlayJob(ctx, item.Project.GitLabProjectID, job.ID); err != nil {
+				return s.markActionFailed(tx, item.ID, "rebuild", err)
+			}
+		}
+	} else {
+		retryJob, ok := latestRetryableJob(matchingJobs)
+		if !ok {
+			if err := s.replacePipelineJobs(tx, item.ID, jobs); err != nil {
+				return err
+			}
+			if actionState(jobs, "package") == "running" {
+				return s.updateReleaseProjectFromJobs(tx, item.ID, item.PipelineID, jobs, "")
+			}
+			return s.markActionFailed(tx, item.ID, "rebuild", fmt.Errorf("未找到可重新构建的 build/package job"))
+		}
+		if _, err := s.gitlab.RetryJob(ctx, item.Project.GitLabProjectID, retryJob.ID); err != nil {
+			return s.markActionFailed(tx, item.ID, "rebuild", err)
+		}
+	}
+
+	refreshedJobs, err := s.gitlab.ListPipelineJobs(ctx, item.Project.GitLabProjectID, item.PipelineID)
+	if err != nil {
+		return s.markActionFailed(tx, item.ID, "rebuild", err)
 	}
 	return s.updateReleaseProjectFromJobs(tx, item.ID, item.PipelineID, refreshedJobs, "")
 }
@@ -589,6 +647,36 @@ func filterPlayableJobs(jobs []gitlab.JobResponse) []gitlab.JobResponse {
 	return result
 }
 
+func latestRetryableJob(jobs []gitlab.JobResponse) (gitlab.JobResponse, bool) {
+	retryable := []gitlab.JobResponse{}
+	for _, job := range jobs {
+		if isRetryableStatus(job.Status) {
+			retryable = append(retryable, job)
+		}
+	}
+	if len(retryable) == 0 {
+		return gitlab.JobResponse{}, false
+	}
+	sort.SliceStable(retryable, func(i, j int) bool {
+		left, leftErr := strconv.Atoi(retryable[i].ID)
+		right, rightErr := strconv.Atoi(retryable[j].ID)
+		if leftErr == nil && rightErr == nil {
+			return left > right
+		}
+		return retryable[i].ID > retryable[j].ID
+	})
+	return retryable[0], true
+}
+
+func isRetryableStatus(status string) bool {
+	switch status {
+	case "failed", "canceled", "success":
+		return true
+	default:
+		return false
+	}
+}
+
 func firstActionJobID(jobs []gitlab.JobResponse, action string) string {
 	for _, job := range jobs {
 		if matchesActionJob(job.Stage, job.Name, action) {
@@ -615,6 +703,13 @@ func projectStatusFromJobs(jobs []gitlab.JobResponse) string {
 	default:
 		return model.ProjectStatusTagged
 	}
+}
+
+func actionJobKind(action string) string {
+	if action == "rebuild" {
+		return "package"
+	}
+	return action
 }
 
 func actionState(jobs []gitlab.JobResponse, action string) string {
@@ -905,6 +1000,9 @@ func (s *Service) refreshReleaseStatus(tx *gorm.DB, releaseID uint) error {
 func actionLabel(action string) string {
 	if action == "deploy" {
 		return "部署"
+	}
+	if action == "rebuild" {
+		return "重新构建"
 	}
 	return "构建"
 }

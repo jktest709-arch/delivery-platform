@@ -100,3 +100,64 @@ func TestCreateTagForbiddenErrorIncludesPermissionHint(t *testing.T) {
 		}
 	}
 }
+
+func TestRetryJobPostsRetryEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/api/v4/projects/delivery%2Fbase-auth/jobs/201/retry" {
+			t.Fatalf("request path = %s, want retry endpoint", r.URL.EscapedPath())
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if r.Header.Get("PRIVATE-TOKEN") != "token" {
+			t.Fatal("PRIVATE-TOKEN header was not sent")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":202,"name":"build-image","stage":"build","status":"pending","web_url":"http://10.0.0.1/jobs/202"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL: server.URL,
+		Token:   "token",
+		DryRun:  false,
+	})
+
+	job, err := client.RetryJob(context.Background(), "delivery/base-auth", "201")
+	if err != nil {
+		t.Fatalf("retry job: %v", err)
+	}
+	if job.ID != "202" || job.Status != "pending" {
+		t.Fatalf("job = %+v, want retried pending job", job)
+	}
+}
+
+func TestGetJobTraceReturnsRawTrace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/api/v4/projects/delivery%2Fbase-auth/jobs/201/trace" {
+			t.Fatalf("request path = %s, want trace endpoint", r.URL.EscapedPath())
+		}
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		if r.Header.Get("PRIVATE-TOKEN") != "token" {
+			t.Fatal("PRIVATE-TOKEN header was not sent")
+		}
+		_, _ = w.Write([]byte("go test ./...\nPASS\n"))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL: server.URL,
+		Token:   "token",
+		DryRun:  false,
+	})
+
+	trace, err := client.GetJobTrace(context.Background(), "delivery/base-auth", "201")
+	if err != nil {
+		t.Fatalf("get trace: %v", err)
+	}
+	if trace != "go test ./...\nPASS\n" {
+		t.Fatalf("trace = %q", trace)
+	}
+}

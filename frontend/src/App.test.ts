@@ -227,6 +227,8 @@ describe("App", () => {
     expect(wrapper.text()).toContain("GitLab Tags API");
     expect(wrapper.text()).toContain("构建 Jobs");
     expect(wrapper.text()).toContain("build-image");
+    expect(wrapper.text()).toContain("重新构建");
+    expect(wrapper.text()).toContain("GitLab");
 
     await wrapper.findAll("button").find((item) => item.text() === "项目配置")!.trigger("click");
     expect(wrapper.text()).toContain("新增项目");

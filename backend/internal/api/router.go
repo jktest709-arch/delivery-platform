@@ -54,6 +54,7 @@ func NewRouter(cfg config.Config, db *gorm.DB, releaseService *release.Service) 
 	authenticated.GET("/releases", handler.listReleases)
 	authenticated.POST("/releases", handler.createRelease)
 	authenticated.GET("/releases/:id", handler.getRelease)
+	authenticated.GET("/releases/:id/projects/:releaseProjectId/jobs/:jobId/trace", handler.getReleaseJobTrace)
 
 	admin := authenticated.Group("")
 	admin.Use(handler.requireRole("admin"))

@@ -121,6 +121,9 @@ export const api = {
   release(id: number) {
     return request<Release>(`/releases/${id}`);
   },
+  jobTrace(releaseId: number, releaseProjectId: number, jobId: number) {
+    return request<{ trace: string }>(`/releases/${releaseId}/projects/${releaseProjectId}/jobs/${jobId}/trace`);
+  },
   createRelease(payload: CreateReleasePayload) {
     return request<Release>("/releases", {
       method: "POST",
