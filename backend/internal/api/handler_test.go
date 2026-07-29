@@ -12,7 +12,7 @@ import (
 	"delivery-platform/backend/internal/api"
 	"delivery-platform/backend/internal/bootstrap"
 	"delivery-platform/backend/internal/config"
-	"delivery-platform/backend/internal/model"
+	"delivery-platform/backend/internal/database"
 	"delivery-platform/backend/internal/release"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -292,17 +292,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(
-		&model.User{},
-		&model.BusinessLine{},
-		&model.Project{},
-		&model.ProjectBusinessLine{},
-		&model.ProjectDependency{},
-		&model.Release{},
-		&model.ReleaseProject{},
-		&model.ReleasePipelineJob{},
-		&model.ReleaseEvent{},
-	); err != nil {
+	if err := database.Migrate(db); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	if err := bootstrap.Seed(db); err != nil {

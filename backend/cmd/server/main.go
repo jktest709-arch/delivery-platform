@@ -8,7 +8,6 @@ import (
 	"delivery-platform/backend/internal/config"
 	"delivery-platform/backend/internal/database"
 	"delivery-platform/backend/internal/gitlab"
-	"delivery-platform/backend/internal/model"
 	"delivery-platform/backend/internal/release"
 )
 
@@ -20,17 +19,7 @@ func main() {
 		log.Fatalf("open database: %v", err)
 	}
 
-	if err := db.AutoMigrate(
-		&model.User{},
-		&model.BusinessLine{},
-		&model.Project{},
-		&model.ProjectBusinessLine{},
-		&model.ProjectDependency{},
-		&model.Release{},
-		&model.ReleaseProject{},
-		&model.ReleasePipelineJob{},
-		&model.ReleaseEvent{},
-	); err != nil {
+	if err := database.Migrate(db); err != nil {
 		log.Fatalf("migrate database: %v", err)
 	}
 

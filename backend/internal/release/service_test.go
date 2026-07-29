@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"delivery-platform/backend/internal/bootstrap"
+	"delivery-platform/backend/internal/database"
 	"delivery-platform/backend/internal/gitlab"
 	"delivery-platform/backend/internal/model"
 	"github.com/glebarez/sqlite"
@@ -94,17 +95,7 @@ func newServiceTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	if err := db.AutoMigrate(
-		&model.User{},
-		&model.BusinessLine{},
-		&model.Project{},
-		&model.ProjectBusinessLine{},
-		&model.ProjectDependency{},
-		&model.Release{},
-		&model.ReleaseProject{},
-		&model.ReleasePipelineJob{},
-		&model.ReleaseEvent{},
-	); err != nil {
+	if err := database.Migrate(db); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	if err := bootstrap.Seed(db); err != nil {
