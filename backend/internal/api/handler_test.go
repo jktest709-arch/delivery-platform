@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"delivery-platform/backend/internal/bootstrap"
 	"delivery-platform/backend/internal/config"
 	"delivery-platform/backend/internal/model"
+	"delivery-platform/backend/internal/release"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -111,6 +113,42 @@ func TestBusinessLineConfigCanCreateAndDelete(t *testing.T) {
 	assertBusinessLineMissing(t, recorder.Body.Bytes(), "cc")
 }
 
+func TestReleaseCanBeDeletedWithProjectsAndEvents(t *testing.T) {
+	router := newTestRouter(t)
+	token := login(t, router)
+
+	body := `{
+		"releaseWindow":"2026-07-29T10:00:00Z",
+		"remark":"delete test",
+		"projects":[{"projectCode":"base-auth","sourceType":"branch","sourceRef":"master"}]
+	}`
+	recorder := authedRequest(t, router, token, http.MethodPost, "/api/releases", body)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("POST /api/releases status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var created struct {
+		ID      uint   `json:"id"`
+		BatchNo string `json:"batchNo"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create release response: %v", err)
+	}
+	if created.ID == 0 {
+		t.Fatal("created release id is empty")
+	}
+
+	recorder = authedRequest(t, router, token, http.MethodDelete, "/api/releases/"+strconv.Itoa(int(created.ID)), "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("DELETE /api/releases/%d status = %d, body = %s", created.ID, recorder.Code, recorder.Body.String())
+	}
+	assertReleaseMissing(t, recorder.Body.Bytes(), created.BatchNo)
+
+	recorder = authedRequest(t, router, token, http.MethodGet, "/api/releases/"+strconv.Itoa(int(created.ID)), "")
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("GET deleted /api/releases/%d status = %d, body = %s", created.ID, recorder.Code, recorder.Body.String())
+	}
+}
+
 func newTestRouter(t *testing.T) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -140,7 +178,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 		JWTSecret:    "test-secret",
 		CORSAllowAll: true,
 	}
-	return api.NewRouter(cfg, db, nil)
+	return api.NewRouter(cfg, db, release.NewService(db, nil))
 }
 
 func authedRequest(t *testing.T, router *gin.Engine, token string, method string, path string, body string) *httptest.ResponseRecorder {
@@ -235,6 +273,19 @@ func assertBusinessLineMissing(t *testing.T, body []byte, code string) {
 	for _, line := range payload {
 		if line["code"] == code {
 			t.Fatalf("business line %s should be absent after deletion", code)
+		}
+	}
+}
+
+func assertReleaseMissing(t *testing.T, body []byte, batchNo string) {
+	t.Helper()
+	var payload []map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode releases response: %v", err)
+	}
+	for _, item := range payload {
+		if item["batchNo"] == batchNo {
+			t.Fatalf("release %s should be absent after deletion", batchNo)
 		}
 	}
 }

@@ -76,6 +76,43 @@ const businessLinesPayload = [
   },
 ];
 
+const releasesPayload = [
+  {
+    id: 1,
+    batchNo: "PRD-20260729-001",
+    applicant: {
+      id: 1,
+      username: "admin",
+      displayName: "高远",
+      role: "admin",
+      status: "enabled",
+    },
+    status: "pending",
+    releaseWindow: "2026-07-29T10:00:00Z",
+    remark: "回归测试",
+    projects: [
+      {
+        id: 1,
+        releaseId: 1,
+        projectId: 1,
+        project: projectsPayload[0],
+        sourceType: "branch",
+        sourceRef: "master",
+        targetTag: "opsprd-20260729100000-001",
+        pipelineId: "",
+        buildJobId: "",
+        deployJobId: "",
+        status: "pending",
+        errorMessage: "",
+        sortOrder: 10,
+      },
+    ],
+    events: [],
+    createdAt: "2026-07-29T09:00:00Z",
+    updatedAt: "2026-07-29T09:00:00Z",
+  },
+];
+
 describe("App", () => {
   let consoleError: ReturnType<typeof vi.spyOn> | undefined;
 
@@ -109,6 +146,10 @@ describe("App", () => {
       expect(wrapper.text()).toContain(tab);
     }
 
+    await wrapper.findAll("button").find((item) => item.text() === "构建执行台")!.trigger("click");
+    expect(wrapper.text()).toContain("PRD-20260729-001");
+    expect(wrapper.text()).toContain("删除任务");
+
     await wrapper.findAll("button").find((item) => item.text() === "项目配置")!.trigger("click");
     expect(wrapper.text()).toContain("新增项目");
     expect(wrapper.text()).toContain("编辑");
@@ -120,6 +161,10 @@ describe("App", () => {
     expect(wrapper.text()).toContain("新增依赖关系");
     expect(wrapper.text()).toContain("编辑");
     expect(wrapper.text()).toContain("删除");
+
+    await wrapper.findAll("button").find((item) => item.text() === "发布历史")!.trigger("click");
+    expect(wrapper.text()).toContain("PRD-20260729-001");
+    expect(wrapper.text()).toContain("删除任务");
 
     expect(consoleError).not.toHaveBeenCalled();
   });
@@ -148,7 +193,7 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
     return jsonResponse(businessLinesPayload);
   }
   if (method === "GET" && url.endsWith("/api/releases")) {
-    return jsonResponse([]);
+    return jsonResponse(releasesPayload);
   }
 
   return jsonResponse({ message: `Unhandled request: ${method} ${url}` }, 404);

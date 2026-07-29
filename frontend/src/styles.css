@@ -230,6 +230,16 @@ code {
   margin-bottom: 14px;
 }
 
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.head-actions select {
+  min-width: 220px;
+}
+
 .counter {
   display: flex;
   gap: 8px;
@@ -532,7 +542,13 @@ tr:last-child td {
   gap: 8px;
 }
 
-.history-list button {
+.history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.history-select {
   display: grid;
   gap: 4px;
   height: auto;
@@ -541,7 +557,7 @@ tr:last-child td {
   text-align: left;
 }
 
-.history-list button.active {
+.history-select.active {
   border-color: var(--blue);
   background: #f5f8ff;
 }

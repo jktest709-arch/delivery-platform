@@ -104,6 +104,9 @@ export const api = {
       body: JSON.stringify(payload),
     });
   },
+  deleteRelease(id: number) {
+    return request<Release[]>(`/releases/${id}`, { method: "DELETE" });
+  },
   createTags(id: number) {
     return request<Release>(`/releases/${id}/tag`, { method: "POST" });
   },

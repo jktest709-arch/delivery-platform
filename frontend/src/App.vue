@@ -284,6 +284,21 @@ async function projectAction(row: ReleaseProject, action: "package" | "deploy") 
   });
 }
 
+async function deleteRelease(item: Release) {
+  if (!canOperate.value) {
+    return;
+  }
+  if (!window.confirm(`确认删除发布任务 ${item.batchNo}？相关项目任务和操作记录也会一起删除。`)) {
+    return;
+  }
+  await run(async () => {
+    const nextReleases = await api.deleteRelease(item.id);
+    releases.value = nextReleases;
+    selectedReleaseId.value = nextReleases[0]?.id ?? null;
+    message.value = `${item.batchNo} 已删除`;
+  });
+}
+
 function emptyProjectForm(): ProjectForm {
   const nextOrder =
     projects.value.length > 0 ? Math.max(...projects.value.map((project) => project.sortOrder)) + 10 : 10;
@@ -765,11 +780,20 @@ function statusLabel(status: string) {
       <section v-if="activeTab === 'console'" class="panel">
         <div class="section-head">
           <h2>执行台</h2>
-          <select v-model.number="selectedReleaseId">
-            <option v-for="item in releases" :key="item.id" :value="item.id">
-              {{ item.batchNo }}
-            </option>
-          </select>
+          <div class="head-actions">
+            <select v-model.number="selectedReleaseId">
+              <option v-for="item in releases" :key="item.id" :value="item.id">
+                {{ item.batchNo }}
+              </option>
+            </select>
+            <button
+              class="danger-button"
+              :disabled="!canOperate || loading || !currentRelease"
+              @click="currentRelease && deleteRelease(currentRelease)"
+            >
+              删除任务
+            </button>
+          </div>
         </div>
 
         <template v-if="currentRelease">
@@ -1192,21 +1216,28 @@ function statusLabel(status: string) {
 
       <section v-if="activeTab === 'history'" class="panel history-layout">
         <div class="history-list">
-          <button
-            v-for="item in releases"
-            :key="item.id"
-            :class="{ active: selectedReleaseId === item.id }"
-            @click="selectedReleaseId = item.id"
-          >
-            <strong>{{ item.batchNo }}</strong>
-            <span>{{ statusLabel(item.status) }}</span>
-          </button>
+          <article v-for="item in releases" :key="item.id" class="history-item">
+            <button
+              class="history-select"
+              :class="{ active: selectedReleaseId === item.id }"
+              @click="selectedReleaseId = item.id"
+            >
+              <strong>{{ item.batchNo }}</strong>
+              <span>{{ statusLabel(item.status) }}</span>
+            </button>
+            <button class="danger-button" :disabled="!canOperate || loading" @click="deleteRelease(item)">删除</button>
+          </article>
         </div>
 
         <div v-if="currentRelease" class="history-detail">
           <div class="section-head">
             <h2>{{ currentRelease.batchNo }}</h2>
-            <span class="status" :class="currentRelease.status">{{ statusLabel(currentRelease.status) }}</span>
+            <div class="head-actions">
+              <span class="status" :class="currentRelease.status">{{ statusLabel(currentRelease.status) }}</span>
+              <button class="danger-button" :disabled="!canOperate || loading" @click="deleteRelease(currentRelease)">
+                删除任务
+              </button>
+            </div>
           </div>
           <div class="table-wrap">
             <table>

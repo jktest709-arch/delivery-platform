@@ -196,6 +196,22 @@ func (s *Service) List(ctx context.Context) ([]model.Release, error) {
 	return releases, nil
 }
 
+func (s *Service) Delete(ctx context.Context, id uint) error {
+	var release model.Release
+	if err := s.db.WithContext(ctx).First(&release, id).Error; err != nil {
+		return err
+	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("release_id = ?", id).Delete(&model.ReleaseEvent{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("release_id = ?", id).Delete(&model.ReleaseProject{}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(&release).Error
+	})
+}
+
 func (s *Service) runPipelines(ctx context.Context, releaseID uint, target string, operator model.User, action string) (model.Release, error) {
 	release, err := s.Get(ctx, releaseID)
 	if err != nil {

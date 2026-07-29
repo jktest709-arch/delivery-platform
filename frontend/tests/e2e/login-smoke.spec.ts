@@ -74,6 +74,43 @@ const businessLinesPayload = [
   },
 ];
 
+const releasesPayload = [
+  {
+    id: 1,
+    batchNo: "PRD-20260729-001",
+    applicant: {
+      id: 1,
+      username: "admin",
+      displayName: "高远",
+      role: "admin",
+      status: "enabled",
+    },
+    status: "pending",
+    releaseWindow: "2026-07-29T10:00:00Z",
+    remark: "回归测试",
+    projects: [
+      {
+        id: 1,
+        releaseId: 1,
+        projectId: 1,
+        project: projectsPayload[0],
+        sourceType: "branch",
+        sourceRef: "master",
+        targetTag: "opsprd-20260729100000-001",
+        pipelineId: "",
+        buildJobId: "",
+        deployJobId: "",
+        status: "pending",
+        errorMessage: "",
+        sortOrder: 10,
+      },
+    ],
+    events: [],
+    createdAt: "2026-07-29T09:00:00Z",
+    updatedAt: "2026-07-29T09:00:00Z",
+  },
+];
+
 test("admin can log in and visit every main page without runtime errors", async ({ page }) => {
   const runtimeErrors: string[] = [];
   page.on("pageerror", (error) => runtimeErrors.push(error.message));
@@ -104,7 +141,7 @@ test("admin can log in and visit every main page without runtime errors", async 
     await route.fulfill({ json: businessLinesPayload });
   });
   await page.route("**/api/releases", async (route) => {
-    await route.fulfill({ json: [] });
+    await route.fulfill({ json: releasesPayload });
   });
 
   await page.goto("/");
@@ -118,6 +155,9 @@ test("admin can log in and visit every main page without runtime errors", async 
     await expect(page.getByRole("heading", { level: 1, name: tab })).toBeVisible();
   }
 
+  await page.getByRole("button", { name: "构建执行台" }).click();
+  await expect(page.getByRole("button", { name: "删除任务" })).toBeVisible();
+
   await page.getByRole("button", { name: "项目配置" }).click();
   await expect(page.getByRole("button", { name: "新增项目" })).toBeVisible();
   await expect(page.getByRole("button", { name: "编辑" }).first()).toBeVisible();
@@ -128,6 +168,10 @@ test("admin can log in and visit every main page without runtime errors", async 
   await expect(page.getByRole("heading", { name: "项目依赖顺序" })).toBeVisible();
   await expect(page.getByRole("button", { name: "新增依赖关系" })).toBeVisible();
   await expect(page.getByRole("button", { name: "删除" }).first()).toBeVisible();
+
+  await page.getByRole("button", { name: "发布历史" }).click();
+  await expect(page.getByRole("heading", { name: "PRD-20260729-001" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "删除任务" })).toBeVisible();
 
   expect(runtimeErrors).toEqual([]);
 });

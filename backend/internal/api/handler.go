@@ -365,6 +365,18 @@ func (h Handler) getRelease(c *gin.Context) {
 	c.JSON(http.StatusOK, item)
 }
 
+func (h Handler) deleteRelease(c *gin.Context) {
+	releaseID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.releaseService.Delete(c.Request.Context(), releaseID); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "发布任务不存在"})
+		return
+	}
+	h.listReleases(c)
+}
+
 func (h Handler) createTags(c *gin.Context) {
 	releaseID, ok := parseUintParam(c, "id")
 	if !ok {
