@@ -118,5 +118,14 @@ test("admin can log in and visit every main page without runtime errors", async 
     await expect(page.getByRole("heading", { level: 1, name: tab })).toBeVisible();
   }
 
+  await page.getByRole("button", { name: "项目配置" }).click();
+  await expect(page.getByRole("button", { name: "新增项目" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "编辑" }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "删除" }).first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Tag 与依赖" }).click();
+  await expect(page.getByRole("button", { name: "新增业务线" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "项目依赖顺序" })).toBeVisible();
+
   expect(runtimeErrors).toEqual([]);
 });

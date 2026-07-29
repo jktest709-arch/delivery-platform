@@ -372,6 +372,8 @@ tr:last-child td {
 .inline-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
   white-space: nowrap;
 }
 
@@ -400,27 +402,96 @@ tr:last-child td {
   color: var(--red);
 }
 
-.project-editor {
+.config-form {
   display: grid;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+  margin-bottom: 14px;
+  padding: 14px;
+}
+
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
   gap: 12px;
 }
 
-.editor-row {
-  display: grid;
-  grid-template-columns: 180px 110px 180px 1.4fr 1fr 120px 150px 150px 90px 72px;
-  gap: 10px;
-  align-items: end;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 12px;
+.config-grid .wide {
+  grid-column: span 2;
 }
 
-.editor-row:last-child {
-  border-bottom: 0;
-  padding-bottom: 0;
+.actions.compact {
+  align-items: center;
+  margin-top: 0;
 }
 
-.row-title {
-  align-self: center;
+.checkbox-field {
+  display: inline-flex;
+  width: auto;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  margin-right: auto;
+}
+
+.checkbox-field span {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.compact-check {
+  min-height: 26px;
+  margin-right: 0;
+}
+
+.config-table table {
+  min-width: 980px;
+}
+
+.project-config-table table {
+  min-width: 1220px;
+}
+
+.config-table td {
+  height: 56px;
+}
+
+.stack-cell {
+  min-width: 160px;
+}
+
+.stack-cell > * + *,
+.stack-cell input + input,
+.stack-cell select + select {
+  margin-top: 6px;
+}
+
+.small-input {
+  width: 76px;
+}
+
+.mono-line {
+  display: block;
+  max-width: 330px;
+  overflow: hidden;
+  color: #184c99;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.danger-button {
+  border-color: #f0b7b2;
+  color: var(--red);
+}
+
+.danger-button:hover:not(:disabled) {
+  border-color: #dc8f88;
+  background: var(--red-bg);
 }
 
 .history-layout {

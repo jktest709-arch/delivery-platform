@@ -62,9 +62,9 @@ func seedUsers(db *gorm.DB) error {
 
 func seedBusinessLines(db *gorm.DB) error {
 	lines := []model.BusinessLine{
-		{Code: "aa", Name: "AA 零售业务线", Platform: "AAPRD", TagPrefix: "aaprd", TagTemplate: "{prefix}-{date}-{releaseNo}", Approver: "交易发布经理"},
-		{Code: "bb", Name: "BB 履约业务线", Platform: "BBPRD", TagPrefix: "bbprd", TagTemplate: "{prefix}-{date}-{releaseNo}", Approver: "履约发布经理"},
-		{Code: "ops", Name: "OPS 平台业务线", Platform: "OPSPRD", TagPrefix: "opsprd", TagTemplate: "{prefix}-{date}-{releaseNo}", Approver: "平台 SRE"},
+		{Code: "aa", Name: "AA 零售业务线", Platform: "AAPRD", TagPrefix: "aaprd", TagTemplate: "{prefix}-{timestamp}-{releaseNo}", Approver: "交易发布经理"},
+		{Code: "bb", Name: "BB 履约业务线", Platform: "BBPRD", TagPrefix: "bbprd", TagTemplate: "{prefix}-{timestamp}-{releaseNo}", Approver: "履约发布经理"},
+		{Code: "ops", Name: "OPS 平台业务线", Platform: "OPSPRD", TagPrefix: "opsprd", TagTemplate: "{prefix}-{timestamp}-{releaseNo}", Approver: "平台 SRE"},
 	}
 	for _, line := range lines {
 		if err := db.Where("code = ?", line.Code).FirstOrCreate(&line).Error; err != nil {

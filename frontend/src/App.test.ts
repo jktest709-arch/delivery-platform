@@ -109,6 +109,16 @@ describe("App", () => {
       expect(wrapper.text()).toContain(tab);
     }
 
+    await wrapper.findAll("button").find((item) => item.text() === "项目配置")!.trigger("click");
+    expect(wrapper.text()).toContain("新增项目");
+    expect(wrapper.text()).toContain("编辑");
+    expect(wrapper.text()).toContain("删除");
+
+    await wrapper.findAll("button").find((item) => item.text() === "Tag 与依赖")!.trigger("click");
+    expect(wrapper.text()).toContain("新增业务线");
+    expect(wrapper.text()).toContain("项目依赖顺序");
+    expect(wrapper.text()).toContain("编辑");
+
     expect(consoleError).not.toHaveBeenCalled();
   });
 });

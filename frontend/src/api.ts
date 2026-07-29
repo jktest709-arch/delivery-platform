@@ -1,7 +1,9 @@
 import type {
   BusinessLine,
+  BusinessLinePayload,
   CreateReleasePayload,
   Project,
+  ProjectPayload,
   Release,
   ReleaseTarget,
   User,
@@ -54,20 +56,38 @@ export const api = {
   projects() {
     return request<Project[]>("/projects");
   },
-  updateProject(project: Project) {
+  createProject(project: ProjectPayload) {
+    return request<Project[]>("/projects", {
+      method: "POST",
+      body: JSON.stringify(project),
+    });
+  },
+  updateProject(project: ProjectPayload) {
     return request<Project[]>(`/projects/${project.code}`, {
       method: "PUT",
       body: JSON.stringify(project),
     });
   },
+  deleteProject(code: string) {
+    return request<Project[]>(`/projects/${code}`, { method: "DELETE" });
+  },
   businessLines() {
     return request<BusinessLine[]>("/business-lines");
   },
-  updateBusinessLine(line: BusinessLine) {
+  createBusinessLine(line: BusinessLinePayload) {
+    return request<BusinessLine[]>("/business-lines", {
+      method: "POST",
+      body: JSON.stringify(line),
+    });
+  },
+  updateBusinessLine(line: BusinessLinePayload) {
     return request<BusinessLine[]>(`/business-lines/${line.code}`, {
       method: "PUT",
       body: JSON.stringify(line),
     });
+  },
+  deleteBusinessLine(code: string) {
+    return request<BusinessLine[]>(`/business-lines/${code}`, { method: "DELETE" });
   },
   updateDependencies(code: string, dependencies: string[]) {
     return request<Project[]>(`/dependencies/${code}`, {

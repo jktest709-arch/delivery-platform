@@ -21,6 +21,8 @@ export type BusinessLine = {
   approver: string;
 };
 
+export type BusinessLinePayload = Omit<BusinessLine, "id">;
+
 export type Project = {
   id: number;
   code: string;
@@ -38,6 +40,8 @@ export type Project = {
   enabled: boolean;
   dependencies: string[] | null;
 };
+
+export type ProjectPayload = Omit<Project, "id" | "businessLine" | "dependencies">;
 
 export type ReleaseProject = {
   id: number;

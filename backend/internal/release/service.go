@@ -71,6 +71,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 	if req.ReleaseWindow.IsZero() {
 		req.ReleaseWindow = time.Now().Add(2 * time.Hour)
 	}
+	tagTime := time.Now()
 
 	var created model.Release
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -87,7 +88,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 
 		for _, project := range projects {
 			source := sourceByCode[project.Code]
-			targetTag := renderTag(project.BusinessLine, releaseNo)
+			targetTag := renderTagAt(project.BusinessLine, releaseNo, tagTime)
 			releaseProject := model.ReleaseProject{
 				ReleaseID:  created.ID,
 				ProjectID:  project.ID,
@@ -318,9 +319,16 @@ func (s *Service) nextBatchNo(ctx context.Context) (string, string, error) {
 }
 
 func renderTag(line model.BusinessLine, releaseNo string) string {
+	return renderTagAt(line, releaseNo, time.Now())
+}
+
+func renderTagAt(line model.BusinessLine, releaseNo string, timestamp time.Time) string {
 	value := line.TagTemplate
+	stamp := timestamp.Format("20060102150405")
 	value = strings.ReplaceAll(value, "{prefix}", line.TagPrefix)
-	value = strings.ReplaceAll(value, "{date}", time.Now().Format("20060102"))
+	value = strings.ReplaceAll(value, "{timestamp}", stamp)
+	value = strings.ReplaceAll(value, "{datetime}", stamp)
+	value = strings.ReplaceAll(value, "{date}", stamp)
 	value = strings.ReplaceAll(value, "{releaseNo}", releaseNo)
 	return value
 }

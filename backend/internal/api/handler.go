@@ -31,6 +31,30 @@ type projectDTO struct {
 	Dependencies     []string `json:"dependencies"`
 }
 
+type projectRequest struct {
+	Code             string `json:"code"`
+	Name             string `json:"name"`
+	Kind             string `json:"kind"`
+	Owner            string `json:"owner"`
+	BusinessLineCode string `json:"businessLineCode"`
+	GitLabURL        string `json:"gitlabUrl"`
+	GitLabProjectID  string `json:"gitlabProjectId"`
+	DefaultBranch    string `json:"defaultBranch"`
+	PackageJob       string `json:"packageJob"`
+	DeployJob        string `json:"deployJob"`
+	SortOrder        int    `json:"sortOrder"`
+	Enabled          *bool  `json:"enabled"`
+}
+
+type businessLineRequest struct {
+	Code        string `json:"code"`
+	Name        string `json:"name"`
+	Platform    string `json:"platform"`
+	TagPrefix   string `json:"tagPrefix"`
+	TagTemplate string `json:"tagTemplate"`
+	Approver    string `json:"approver"`
+}
+
 func (h Handler) health(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
@@ -72,44 +96,97 @@ func (h Handler) listProjects(c *gin.Context) {
 }
 
 func (h Handler) updateProject(c *gin.Context) {
-	var req struct {
-		Name             string `json:"name"`
-		Kind             string `json:"kind"`
-		Owner            string `json:"owner"`
-		BusinessLineCode string `json:"businessLineCode"`
-		GitLabURL        string `json:"gitlabUrl"`
-		GitLabProjectID  string `json:"gitlabProjectId"`
-		DefaultBranch    string `json:"defaultBranch"`
-		PackageJob       string `json:"packageJob"`
-		DeployJob        string `json:"deployJob"`
-		SortOrder        int    `json:"sortOrder"`
-		Enabled          bool   `json:"enabled"`
-	}
+	var req projectRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
+	req.Code = c.Param("code")
 
-	var line model.BusinessLine
-	if err := h.db.Where("code = ?", req.BusinessLineCode).First(&line).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "业务线不存在"})
+	updates, err := h.projectUpdates(req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-
-	updates := map[string]interface{}{
-		"name":               req.Name,
-		"kind":               req.Kind,
-		"owner":              req.Owner,
-		"business_line_id":   line.ID,
-		"git_lab_url":        req.GitLabURL,
-		"git_lab_project_id": req.GitLabProjectID,
-		"default_branch":     req.DefaultBranch,
-		"package_job":        req.PackageJob,
-		"deploy_job":         req.DeployJob,
-		"sort_order":         req.SortOrder,
-		"enabled":            req.Enabled,
+	result := h.db.Model(&model.Project{}).Where("code = ?", c.Param("code")).Updates(updates)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": result.Error.Error()})
+		return
 	}
-	if err := h.db.Model(&model.Project{}).Where("code = ?", c.Param("code")).Updates(updates).Error; err != nil {
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"message": "项目不存在"})
+		return
+	}
+	h.listProjects(c)
+}
+
+func (h Handler) createProject(c *gin.Context) {
+	var req projectRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	code := strings.TrimSpace(req.Code)
+	req.Code = code
+	updates, err := h.projectUpdates(req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	updates["code"] = code
+	updates["enabled"] = true
+
+	var existing model.Project
+	err = h.db.Where("code = ?", code).First(&existing).Error
+	if err == nil {
+		if existing.Enabled {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "项目 Code 已存在"})
+			return
+		}
+		if err := h.db.Model(&existing).Updates(updates).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+			return
+		}
+		h.listProjects(c)
+		return
+	}
+	if err != gorm.ErrRecordNotFound {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if err := h.db.Create(&model.Project{
+		Code:            updates["code"].(string),
+		Name:            updates["name"].(string),
+		Kind:            updates["kind"].(string),
+		Owner:           updates["owner"].(string),
+		BusinessLineID:  updates["business_line_id"].(uint),
+		GitLabURL:       updates["git_lab_url"].(string),
+		GitLabProjectID: updates["git_lab_project_id"].(string),
+		DefaultBranch:   updates["default_branch"].(string),
+		PackageJob:      updates["package_job"].(string),
+		DeployJob:       updates["deploy_job"].(string),
+		SortOrder:       updates["sort_order"].(int),
+		Enabled:         true,
+	}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	h.listProjects(c)
+}
+
+func (h Handler) deleteProject(c *gin.Context) {
+	var project model.Project
+	if err := h.db.Where("code = ?", c.Param("code")).First(&project).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "项目不存在"})
+		return
+	}
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("project_id = ? OR depends_on_project_id = ?", project.ID, project.ID).Delete(&model.ProjectDependency{}).Error; err != nil {
+			return err
+		}
+		return tx.Model(&project).Update("enabled", false).Error
+	})
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -126,24 +203,80 @@ func (h Handler) listBusinessLines(c *gin.Context) {
 }
 
 func (h Handler) updateBusinessLine(c *gin.Context) {
-	var req struct {
-		Name        string `json:"name"`
-		Platform    string `json:"platform"`
-		TagPrefix   string `json:"tagPrefix"`
-		TagTemplate string `json:"tagTemplate"`
-		Approver    string `json:"approver"`
-	}
+	var req businessLineRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	if err := h.db.Model(&model.BusinessLine{}).Where("code = ?", c.Param("code")).Updates(map[string]interface{}{
-		"name":         req.Name,
-		"platform":     req.Platform,
-		"tag_prefix":   req.TagPrefix,
-		"tag_template": req.TagTemplate,
-		"approver":     req.Approver,
-	}).Error; err != nil {
+	updates, err := h.businessLineUpdates(req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	if err := h.db.Model(&model.BusinessLine{}).Where("code = ?", c.Param("code")).Updates(updates).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	h.listBusinessLines(c)
+}
+
+func (h Handler) createBusinessLine(c *gin.Context) {
+	var req businessLineRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	updates, err := h.businessLineUpdates(req)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	code := strings.TrimSpace(req.Code)
+	if code == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "业务线 Code 不能为空"})
+		return
+	}
+	var existing model.BusinessLine
+	err = h.db.Where("code = ?", code).First(&existing).Error
+	if err == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "业务线 Code 已存在"})
+		return
+	}
+	if err != gorm.ErrRecordNotFound {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	line := model.BusinessLine{
+		Code:        code,
+		Name:        updates["name"].(string),
+		Platform:    updates["platform"].(string),
+		TagPrefix:   updates["tag_prefix"].(string),
+		TagTemplate: updates["tag_template"].(string),
+		Approver:    updates["approver"].(string),
+	}
+	if err := h.db.Create(&line).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	h.listBusinessLines(c)
+}
+
+func (h Handler) deleteBusinessLine(c *gin.Context) {
+	var line model.BusinessLine
+	if err := h.db.Where("code = ?", c.Param("code")).First(&line).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "业务线不存在"})
+		return
+	}
+	var count int64
+	if err := h.db.Model(&model.Project{}).Where("business_line_id = ?", line.ID).Count(&count).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if count > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "业务线已被项目使用，不能删除"})
+		return
+	}
+	if err := h.db.Delete(&line).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -289,7 +422,7 @@ func (h Handler) deployReleaseProject(c *gin.Context) {
 
 func (h Handler) projectsWithDependencies() ([]projectDTO, error) {
 	var projects []model.Project
-	if err := h.db.Preload("BusinessLine").Order("sort_order asc").Find(&projects).Error; err != nil {
+	if err := h.db.Preload("BusinessLine").Where("enabled = ?", true).Order("sort_order asc").Find(&projects).Error; err != nil {
 		return nil, err
 	}
 
@@ -324,6 +457,67 @@ func (h Handler) projectsWithDependencies() ([]projectDTO, error) {
 		})
 	}
 	return result, nil
+}
+
+func (h Handler) projectUpdates(req projectRequest) (map[string]interface{}, error) {
+	code := strings.TrimSpace(req.Code)
+	if code == "" {
+		return nil, errMessage("项目 Code 不能为空")
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		return nil, errMessage("项目名称不能为空")
+	}
+	if req.Kind != model.ProjectKindBackend && req.Kind != model.ProjectKindFrontend {
+		return nil, errMessage("项目类型只能是 backend 或 frontend")
+	}
+	var line model.BusinessLine
+	if err := h.db.Where("code = ?", strings.TrimSpace(req.BusinessLineCode)).First(&line).Error; err != nil {
+		return nil, errMessage("业务线不存在")
+	}
+	enabled := true
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	return map[string]interface{}{
+		"name":               name,
+		"kind":               req.Kind,
+		"owner":              strings.TrimSpace(req.Owner),
+		"business_line_id":   line.ID,
+		"git_lab_url":        strings.TrimSpace(req.GitLabURL),
+		"git_lab_project_id": strings.TrimSpace(req.GitLabProjectID),
+		"default_branch":     strings.TrimSpace(req.DefaultBranch),
+		"package_job":        strings.TrimSpace(req.PackageJob),
+		"deploy_job":         strings.TrimSpace(req.DeployJob),
+		"sort_order":         req.SortOrder,
+		"enabled":            enabled,
+	}, nil
+}
+
+func (h Handler) businessLineUpdates(req businessLineRequest) (map[string]interface{}, error) {
+	if strings.TrimSpace(req.Name) == "" {
+		return nil, errMessage("业务线名称不能为空")
+	}
+	if strings.TrimSpace(req.TagPrefix) == "" {
+		return nil, errMessage("Tag 前缀不能为空")
+	}
+	template := strings.TrimSpace(req.TagTemplate)
+	if template == "" {
+		template = "{prefix}-{timestamp}-{releaseNo}"
+	}
+	return map[string]interface{}{
+		"name":         strings.TrimSpace(req.Name),
+		"platform":     strings.TrimSpace(req.Platform),
+		"tag_prefix":   strings.TrimSpace(req.TagPrefix),
+		"tag_template": template,
+		"approver":     strings.TrimSpace(req.Approver),
+	}, nil
+}
+
+type errMessage string
+
+func (e errMessage) Error() string {
+	return string(e)
 }
 
 func writeReleaseResult(c *gin.Context, item model.Release, err error) {

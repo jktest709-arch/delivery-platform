@@ -3,8 +3,11 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { api, clearToken, getToken, setToken } from "./api";
 import type {
   BusinessLine,
+  BusinessLinePayload,
   CreateReleasePayload,
   Project,
+  ProjectKind,
+  ProjectPayload,
   Release,
   ReleaseProject,
   ReleaseTarget,
@@ -68,9 +71,22 @@ type SourceForm = {
   sourceRef: string;
 };
 
+type ProjectForm = ProjectPayload;
+type BusinessLineForm = BusinessLinePayload;
+
 const selectedProjectCodes = ref<string[]>([]);
 const sourceForms = reactive<Record<string, SourceForm>>({});
 const dependencyText = reactive<Record<string, string>>({});
+const editingProjectCode = ref<string | null>(null);
+const projectDrafts = reactive<Record<string, ProjectForm>>({});
+const showNewProjectForm = ref(false);
+const newProjectForm = reactive<ProjectForm>(emptyProjectForm());
+const editingLineCode = ref<string | null>(null);
+const lineDrafts = reactive<Record<string, BusinessLineForm>>({});
+const showNewLineForm = ref(false);
+const newLineForm = reactive<BusinessLineForm>(emptyBusinessLineForm());
+const editingDependencyCode = ref<string | null>(null);
+const dependencyDrafts = reactive<Record<string, string>>({});
 
 const canOperate = computed(() => {
   return user.value?.role === "release_manager" || user.value?.role === "admin";
@@ -159,8 +175,24 @@ function syncProjectState(projectResult: Project[]) {
       delete dependencyText[code];
     }
   }
+  for (const code of Object.keys(projectDrafts)) {
+    if (!activeCodes.has(code)) {
+      delete projectDrafts[code];
+    }
+  }
+  for (const code of Object.keys(dependencyDrafts)) {
+    if (!activeCodes.has(code)) {
+      delete dependencyDrafts[code];
+    }
+  }
 
   selectedProjectCodes.value = selectedProjectCodes.value.filter((code) => activeCodes.has(code));
+  if (editingProjectCode.value && !activeCodes.has(editingProjectCode.value)) {
+    editingProjectCode.value = null;
+  }
+  if (editingDependencyCode.value && !activeCodes.has(editingDependencyCode.value)) {
+    editingDependencyCode.value = null;
+  }
   if (selectedProjectCodes.value.length === 0) {
     selectedProjectCodes.value = projectResult.slice(0, 5).map((project) => project.code);
   }
@@ -240,24 +272,243 @@ async function projectAction(row: ReleaseProject, action: "package" | "deploy") 
   });
 }
 
-async function saveProject(project: Project) {
+function emptyProjectForm(): ProjectForm {
+  const nextOrder =
+    projects.value.length > 0 ? Math.max(...projects.value.map((project) => project.sortOrder)) + 10 : 10;
+  return {
+    code: "",
+    name: "",
+    kind: "backend",
+    owner: "",
+    businessLineCode: lines.value[0]?.code ?? "",
+    gitlabUrl: "",
+    gitlabProjectId: "",
+    defaultBranch: "master",
+    packageJob: "build-prd",
+    deployJob: "deploy-prd",
+    sortOrder: nextOrder,
+    enabled: true,
+  };
+}
+
+function projectToForm(project: Project): ProjectForm {
+  return {
+    code: project.code,
+    name: project.name,
+    kind: project.kind,
+    owner: project.owner,
+    businessLineCode: project.businessLineCode || project.businessLine?.code || "",
+    gitlabUrl: project.gitlabUrl,
+    gitlabProjectId: project.gitlabProjectId,
+    defaultBranch: project.defaultBranch,
+    packageJob: project.packageJob,
+    deployJob: project.deployJob,
+    sortOrder: project.sortOrder,
+    enabled: project.enabled,
+  };
+}
+
+function projectDraft(project: Project): ProjectForm {
+  if (!projectDrafts[project.code]) {
+    projectDrafts[project.code] = projectToForm(project);
+  }
+  return projectDrafts[project.code];
+}
+
+function normalizeProjectForm(form: ProjectForm): ProjectForm {
+  return {
+    ...form,
+    code: form.code.trim(),
+    name: form.name.trim(),
+    kind: form.kind as ProjectKind,
+    owner: form.owner.trim(),
+    businessLineCode: form.businessLineCode.trim(),
+    gitlabUrl: form.gitlabUrl.trim(),
+    gitlabProjectId: form.gitlabProjectId.trim(),
+    defaultBranch: form.defaultBranch.trim(),
+    packageJob: form.packageJob.trim(),
+    deployJob: form.deployJob.trim(),
+    sortOrder: Number(form.sortOrder) || 0,
+    enabled: Boolean(form.enabled),
+  };
+}
+
+function openNewProjectForm() {
+  Object.assign(newProjectForm, emptyProjectForm());
+  showNewProjectForm.value = true;
+  editingProjectCode.value = null;
+}
+
+function cancelNewProjectForm() {
+  showNewProjectForm.value = false;
+}
+
+function startProjectEdit(project: Project) {
+  projectDrafts[project.code] = projectToForm(project);
+  editingProjectCode.value = project.code;
+  showNewProjectForm.value = false;
+}
+
+function cancelProjectEdit(code: string) {
+  delete projectDrafts[code];
+  if (editingProjectCode.value === code) {
+    editingProjectCode.value = null;
+  }
+}
+
+async function createProjectFromDraft() {
+  const payload = normalizeProjectForm(newProjectForm);
   await run(async () => {
-    const nextProjects = await api.updateProject(project);
+    const nextProjects = await api.createProject(payload);
     syncProjectState(nextProjects);
     projects.value = nextProjects;
-    message.value = `${project.name} 配置已保存`;
+    showNewProjectForm.value = false;
+    message.value = `${payload.name} 已新增`;
   });
 }
 
-async function saveLine(line: BusinessLine) {
+async function saveProjectDraft(project: Project) {
+  const payload = normalizeProjectForm(projectDraft(project));
   await run(async () => {
-    lines.value = await api.updateBusinessLine(line);
-    message.value = `${line.name} 配置已保存`;
+    const nextProjects = await api.updateProject(payload);
+    syncProjectState(nextProjects);
+    projects.value = nextProjects;
+    cancelProjectEdit(project.code);
+    message.value = `${payload.name} 配置已保存`;
   });
 }
 
-async function saveDependencies(project: Project) {
-  const dependencies = (dependencyText[project.code] ?? "")
+async function deleteProject(project: Project) {
+  if (!window.confirm(`确认删除项目 ${project.name}？`)) {
+    return;
+  }
+  await run(async () => {
+    const nextProjects = await api.deleteProject(project.code);
+    syncProjectState(nextProjects);
+    projects.value = nextProjects;
+    cancelProjectEdit(project.code);
+    message.value = `${project.name} 已删除`;
+  });
+}
+
+function emptyBusinessLineForm(): BusinessLineForm {
+  return {
+    code: "",
+    name: "",
+    platform: "",
+    tagPrefix: "",
+    tagTemplate: "{prefix}-{timestamp}-{releaseNo}",
+    approver: "",
+  };
+}
+
+function lineToForm(line: BusinessLine): BusinessLineForm {
+  return {
+    code: line.code,
+    name: line.name,
+    platform: line.platform,
+    tagPrefix: line.tagPrefix,
+    tagTemplate: line.tagTemplate,
+    approver: line.approver,
+  };
+}
+
+function lineDraft(line: BusinessLine): BusinessLineForm {
+  if (!lineDrafts[line.code]) {
+    lineDrafts[line.code] = lineToForm(line);
+  }
+  return lineDrafts[line.code];
+}
+
+function normalizeLineForm(form: BusinessLineForm): BusinessLineForm {
+  return {
+    code: form.code.trim(),
+    name: form.name.trim(),
+    platform: form.platform.trim(),
+    tagPrefix: form.tagPrefix.trim(),
+    tagTemplate: form.tagTemplate.trim() || "{prefix}-{timestamp}-{releaseNo}",
+    approver: form.approver.trim(),
+  };
+}
+
+function openNewLineForm() {
+  Object.assign(newLineForm, emptyBusinessLineForm());
+  showNewLineForm.value = true;
+  editingLineCode.value = null;
+}
+
+function cancelNewLineForm() {
+  showNewLineForm.value = false;
+}
+
+function startLineEdit(line: BusinessLine) {
+  lineDrafts[line.code] = lineToForm(line);
+  editingLineCode.value = line.code;
+  showNewLineForm.value = false;
+}
+
+function cancelLineEdit(code: string) {
+  delete lineDrafts[code];
+  if (editingLineCode.value === code) {
+    editingLineCode.value = null;
+  }
+}
+
+async function createLineFromDraft() {
+  const payload = normalizeLineForm(newLineForm);
+  await run(async () => {
+    lines.value = await api.createBusinessLine(payload);
+    showNewLineForm.value = false;
+    message.value = `${payload.name} 已新增`;
+  });
+}
+
+async function saveLineDraft(line: BusinessLine) {
+  const payload = normalizeLineForm(lineDraft(line));
+  await run(async () => {
+    lines.value = await api.updateBusinessLine(payload);
+    cancelLineEdit(line.code);
+    message.value = `${payload.name} 配置已保存`;
+  });
+}
+
+async function deleteLine(line: BusinessLine) {
+  if (!window.confirm(`确认删除业务线 ${line.name}？`)) {
+    return;
+  }
+  await run(async () => {
+    lines.value = await api.deleteBusinessLine(line.code);
+    cancelLineEdit(line.code);
+    message.value = `${line.name} 已删除`;
+  });
+}
+
+function dependencyValue(project: Project) {
+  const dependencies = projectDependencies(project);
+  return dependencies.length ? dependencies.join(", ") : "-";
+}
+
+function dependencyDraft(project: Project) {
+  if (dependencyDrafts[project.code] === undefined) {
+    dependencyDrafts[project.code] = projectDependencies(project).join(",");
+  }
+  return dependencyDrafts[project.code];
+}
+
+function startDependencyEdit(project: Project) {
+  dependencyDrafts[project.code] = projectDependencies(project).join(",");
+  editingDependencyCode.value = project.code;
+}
+
+function cancelDependencyEdit(code: string) {
+  delete dependencyDrafts[code];
+  if (editingDependencyCode.value === code) {
+    editingDependencyCode.value = null;
+  }
+}
+
+async function saveDependencyDraft(project: Project) {
+  const dependencies = dependencyDraft(project)
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
@@ -265,8 +516,14 @@ async function saveDependencies(project: Project) {
     const nextProjects = await api.updateDependencies(project.code, dependencies);
     syncProjectState(nextProjects);
     projects.value = nextProjects;
+    cancelDependencyEdit(project.code);
     message.value = `${project.name} 依赖已保存`;
   });
+}
+
+async function clearDependencyDraft(project: Project) {
+  dependencyDrafts[project.code] = "";
+  await saveDependencyDraft(project);
 }
 
 function upsertRelease(updated: Release) {
@@ -508,79 +765,260 @@ function statusLabel(status: string) {
       <section v-if="activeTab === 'projects'" class="panel">
         <div class="section-head">
           <h2>项目配置</h2>
+          <button class="primary" :disabled="loading" @click="openNewProjectForm">新增项目</button>
         </div>
-        <div class="project-editor">
-          <article v-for="project in orderedProjects" :key="project.code" class="editor-row">
-            <div class="row-title">
-              <strong>{{ project.name }}</strong>
-              <small>{{ project.code }}</small>
-            </div>
+
+        <form v-if="showNewProjectForm" class="config-form" @submit.prevent="createProjectFromDraft">
+          <div class="config-grid">
+            <label>
+              <span>项目 Code</span>
+              <input v-model="newProjectForm.code" required />
+            </label>
+            <label>
+              <span>项目名称</span>
+              <input v-model="newProjectForm.name" required />
+            </label>
             <label>
               <span>类型</span>
-              <select v-model="project.kind">
+              <select v-model="newProjectForm.kind">
                 <option value="backend">后端</option>
                 <option value="frontend">前端</option>
               </select>
             </label>
             <label>
               <span>业务线</span>
-              <select v-model="project.businessLineCode">
+              <select v-model="newProjectForm.businessLineCode" required>
                 <option v-for="line in lines" :key="line.code" :value="line.code">{{ line.name }}</option>
               </select>
             </label>
-            <label>
+            <label class="wide">
               <span>GitLab 地址</span>
-              <input v-model="project.gitlabUrl" />
+              <input v-model="newProjectForm.gitlabUrl" required />
             </label>
             <label>
               <span>Project ID</span>
-              <input v-model="project.gitlabProjectId" />
+              <input v-model="newProjectForm.gitlabProjectId" required />
             </label>
             <label>
               <span>默认分支</span>
-              <input v-model="project.defaultBranch" />
+              <input v-model="newProjectForm.defaultBranch" required />
             </label>
             <label>
               <span>打包 Job</span>
-              <input v-model="project.packageJob" />
+              <input v-model="newProjectForm.packageJob" required />
             </label>
             <label>
               <span>部署 Job</span>
-              <input v-model="project.deployJob" />
+              <input v-model="newProjectForm.deployJob" required />
+            </label>
+            <label>
+              <span>负责人</span>
+              <input v-model="newProjectForm.owner" required />
             </label>
             <label>
               <span>排序</span>
-              <input v-model.number="project.sortOrder" type="number" />
+              <input v-model.number="newProjectForm.sortOrder" type="number" />
             </label>
-            <button :disabled="loading" @click="saveProject(project)">保存</button>
-          </article>
+          </div>
+          <div class="actions compact">
+            <label class="checkbox-field">
+              <input v-model="newProjectForm.enabled" type="checkbox" />
+              <span>启用</span>
+            </label>
+            <button type="button" :disabled="loading" @click="cancelNewProjectForm">取消</button>
+            <button class="primary" :disabled="loading" type="submit">保存新增</button>
+          </div>
+        </form>
+
+        <div class="table-wrap config-table project-config-table">
+          <table>
+            <thead>
+              <tr>
+                <th>顺序</th>
+                <th>项目</th>
+                <th>类型 / 业务线</th>
+                <th>GitLab 仓库</th>
+                <th>默认分支 / Job</th>
+                <th>负责人</th>
+                <th>状态</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="project in orderedProjects" :key="project.code">
+                <td>
+                  <input
+                    v-if="editingProjectCode === project.code"
+                    v-model.number="projectDraft(project).sortOrder"
+                    class="small-input"
+                    type="number"
+                  />
+                  <span v-else>{{ project.sortOrder }}</span>
+                </td>
+                <td>
+                  <template v-if="editingProjectCode === project.code">
+                    <input v-model="projectDraft(project).name" />
+                    <small>{{ project.code }}</small>
+                  </template>
+                  <template v-else>
+                    <strong>{{ project.name }}</strong>
+                    <small>{{ project.code }}</small>
+                  </template>
+                </td>
+                <td class="stack-cell">
+                  <template v-if="editingProjectCode === project.code">
+                    <select v-model="projectDraft(project).kind">
+                      <option value="backend">后端</option>
+                      <option value="frontend">前端</option>
+                    </select>
+                    <select v-model="projectDraft(project).businessLineCode">
+                      <option v-for="line in lines" :key="line.code" :value="line.code">{{ line.name }}</option>
+                    </select>
+                  </template>
+                  <template v-else>
+                    <span>{{ kindText[project.kind] }}</span>
+                    <small>{{ project.businessLine?.name }}</small>
+                  </template>
+                </td>
+                <td class="stack-cell">
+                  <template v-if="editingProjectCode === project.code">
+                    <input v-model="projectDraft(project).gitlabUrl" />
+                    <input v-model="projectDraft(project).gitlabProjectId" />
+                  </template>
+                  <template v-else>
+                    <span class="mono-line">{{ project.gitlabUrl }}</span>
+                    <small>ID: {{ project.gitlabProjectId }}</small>
+                  </template>
+                </td>
+                <td class="stack-cell">
+                  <template v-if="editingProjectCode === project.code">
+                    <input v-model="projectDraft(project).defaultBranch" />
+                    <input v-model="projectDraft(project).packageJob" />
+                    <input v-model="projectDraft(project).deployJob" />
+                  </template>
+                  <template v-else>
+                    <span>{{ project.defaultBranch }}</span>
+                    <small>{{ project.packageJob }} / {{ project.deployJob }}</small>
+                  </template>
+                </td>
+                <td>
+                  <input v-if="editingProjectCode === project.code" v-model="projectDraft(project).owner" />
+                  <span v-else>{{ project.owner }}</span>
+                </td>
+                <td>
+                  <label v-if="editingProjectCode === project.code" class="checkbox-field compact-check">
+                    <input v-model="projectDraft(project).enabled" type="checkbox" />
+                    <span>启用</span>
+                  </label>
+                  <span v-else class="status" :class="project.enabled ? 'deploy_success' : 'pending'">
+                    {{ project.enabled ? "启用" : "停用" }}
+                  </span>
+                </td>
+                <td class="inline-actions">
+                  <template v-if="editingProjectCode === project.code">
+                    <button class="primary" :disabled="loading" @click="saveProjectDraft(project)">保存</button>
+                    <button :disabled="loading" @click="cancelProjectEdit(project.code)">取消</button>
+                  </template>
+                  <template v-else>
+                    <button :disabled="loading" @click="startProjectEdit(project)">编辑</button>
+                    <button class="danger-button" :disabled="loading" @click="deleteProject(project)">删除</button>
+                  </template>
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
       <section v-if="activeTab === 'rules'" class="panel stack">
         <div class="section-head">
           <h2>业务线 Tag</h2>
+          <button class="primary" :disabled="loading" @click="openNewLineForm">新增业务线</button>
         </div>
-        <div class="table-wrap">
+
+        <form v-if="showNewLineForm" class="config-form" @submit.prevent="createLineFromDraft">
+          <div class="config-grid">
+            <label>
+              <span>业务线 Code</span>
+              <input v-model="newLineForm.code" required />
+            </label>
+            <label>
+              <span>业务线名称</span>
+              <input v-model="newLineForm.name" required />
+            </label>
+            <label>
+              <span>平台</span>
+              <input v-model="newLineForm.platform" required />
+            </label>
+            <label>
+              <span>Tag 前缀</span>
+              <input v-model="newLineForm.tagPrefix" required />
+            </label>
+            <label class="wide">
+              <span>Tag 模板</span>
+              <input v-model="newLineForm.tagTemplate" required />
+            </label>
+            <label>
+              <span>审批人</span>
+              <input v-model="newLineForm.approver" required />
+            </label>
+          </div>
+          <div class="actions compact">
+            <button type="button" :disabled="loading" @click="cancelNewLineForm">取消</button>
+            <button class="primary" :disabled="loading" type="submit">保存新增</button>
+          </div>
+        </form>
+
+        <div class="table-wrap config-table">
           <table>
             <thead>
               <tr>
                 <th>业务线</th>
                 <th>平台</th>
-                <th>前缀</th>
-                <th>模板</th>
+                <th>Tag 前缀</th>
+                <th>Tag 模板</th>
                 <th>审批人</th>
-                <th></th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="line in lines" :key="line.code">
-                <td><input v-model="line.name" /></td>
-                <td><input v-model="line.platform" /></td>
-                <td><input v-model="line.tagPrefix" /></td>
-                <td><input v-model="line.tagTemplate" /></td>
-                <td><input v-model="line.approver" /></td>
-                <td><button :disabled="loading" @click="saveLine(line)">保存</button></td>
+                <td>
+                  <template v-if="editingLineCode === line.code">
+                    <input v-model="lineDraft(line).name" />
+                    <small>{{ line.code }}</small>
+                  </template>
+                  <template v-else>
+                    <strong>{{ line.name }}</strong>
+                    <small>{{ line.code }}</small>
+                  </template>
+                </td>
+                <td>
+                  <input v-if="editingLineCode === line.code" v-model="lineDraft(line).platform" />
+                  <span v-else>{{ line.platform }}</span>
+                </td>
+                <td>
+                  <input v-if="editingLineCode === line.code" v-model="lineDraft(line).tagPrefix" />
+                  <code v-else>{{ line.tagPrefix }}</code>
+                </td>
+                <td>
+                  <input v-if="editingLineCode === line.code" v-model="lineDraft(line).tagTemplate" />
+                  <code v-else>{{ line.tagTemplate }}</code>
+                </td>
+                <td>
+                  <input v-if="editingLineCode === line.code" v-model="lineDraft(line).approver" />
+                  <span v-else>{{ line.approver }}</span>
+                </td>
+                <td class="inline-actions">
+                  <template v-if="editingLineCode === line.code">
+                    <button class="primary" :disabled="loading" @click="saveLineDraft(line)">保存</button>
+                    <button :disabled="loading" @click="cancelLineEdit(line.code)">取消</button>
+                  </template>
+                  <template v-else>
+                    <button :disabled="loading" @click="startLineEdit(line)">编辑</button>
+                    <button class="danger-button" :disabled="loading" @click="deleteLine(line)">删除</button>
+                  </template>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -589,22 +1027,40 @@ function statusLabel(status: string) {
         <div class="section-head">
           <h2>项目依赖顺序</h2>
         </div>
-        <div class="table-wrap">
+        <div class="table-wrap config-table">
           <table>
             <thead>
               <tr>
                 <th>顺序</th>
                 <th>项目</th>
+                <th>类型</th>
                 <th>依赖项目 Code</th>
-                <th></th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="project in orderedProjects" :key="project.code">
                 <td>{{ project.sortOrder }}</td>
-                <td>{{ project.name }}</td>
-                <td><input v-model="dependencyText[project.code]" /></td>
-                <td><button :disabled="loading" @click="saveDependencies(project)">保存</button></td>
+                <td>
+                  <strong>{{ project.name }}</strong>
+                  <small>{{ project.code }}</small>
+                </td>
+                <td>{{ kindText[project.kind] }}</td>
+                <td>
+                  <input
+                    v-if="editingDependencyCode === project.code"
+                    v-model="dependencyDrafts[project.code]"
+                  />
+                  <span v-else>{{ dependencyValue(project) }}</span>
+                </td>
+                <td class="inline-actions">
+                  <template v-if="editingDependencyCode === project.code">
+                    <button class="primary" :disabled="loading" @click="saveDependencyDraft(project)">保存</button>
+                    <button :disabled="loading" @click="cancelDependencyEdit(project.code)">取消</button>
+                    <button class="danger-button" :disabled="loading" @click="clearDependencyDraft(project)">清空</button>
+                  </template>
+                  <button v-else :disabled="loading" @click="startDependencyEdit(project)">编辑</button>
+                </td>
               </tr>
             </tbody>
           </table>
