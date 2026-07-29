@@ -242,10 +242,25 @@ describe("App", () => {
     expect(wrapper.text()).toContain("新增业务线");
     expect(wrapper.text()).toContain("项目依赖顺序");
     expect(wrapper.text()).toContain("新增依赖关系");
+    expect(wrapper.text()).toContain("上移");
+    expect(wrapper.text()).toContain("下移");
     expect(wrapper.text()).toContain("删除整行");
     expect(wrapper.text()).toContain("编辑");
     expect(wrapper.text()).toContain("删除");
     expect(wrapper.text()).not.toContain("关联项目 / 迁移到");
+
+    const firstMoveDown = wrapper.findAll("button").find((item) => item.text() === "下移");
+    expect(firstMoveDown, "missing project move down button").toBeTruthy();
+    await firstMoveDown!.trigger("click");
+    await flushPromises();
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/projects/order"),
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ codes: ["order-core", "base-auth"] }),
+      }),
+    );
+    expect(wrapper.text()).toContain("打包顺序已保存");
 
     const opsDeleteButton = wrapper
       .findAll("tr")
@@ -290,6 +305,22 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
   }
   if (method === "GET" && url.endsWith("/api/projects")) {
     return jsonResponse(projectsPayload);
+  }
+  if (method === "PUT" && url.endsWith("/api/projects/order")) {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { codes?: string[] };
+    const projectByCode = new Map(projectsPayload.map((project) => [project.code, project]));
+    return jsonResponse(
+      (body.codes ?? []).map((code, index) => {
+        const project = projectByCode.get(code);
+        if (!project) {
+          throw new Error(`unknown project ${code}`);
+        }
+        return {
+          ...project,
+          sortOrder: (index + 1) * 10,
+        };
+      }),
+    );
   }
   if (method === "GET" && url.endsWith("/api/business-lines")) {
     return jsonResponse(businessLinesPayload);

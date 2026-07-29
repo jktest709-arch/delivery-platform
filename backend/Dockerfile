@@ -4,6 +4,8 @@ WORKDIR /src
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=$GOPROXY
 
+RUN apk add --no-cache ca-certificates
+
 COPY go.mod go.sum* ./
 RUN go mod download
 

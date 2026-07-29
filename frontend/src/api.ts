@@ -87,6 +87,12 @@ export const api = {
       body: JSON.stringify(project),
     });
   },
+  updateProjectOrder(codes: string[]) {
+    return request<Project[]>("/projects/order", {
+      method: "PUT",
+      body: JSON.stringify({ codes }),
+    });
+  },
   deleteProject(code: string) {
     return request<Project[]>(`/projects/${code}`, { method: "DELETE" });
   },

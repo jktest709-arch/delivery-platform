@@ -137,7 +137,7 @@ Token 至少需要具备创建 tag、读取 pipeline/jobs、触发 manual job �
 - 上线单申请：开发先指定本次发布业务线，再选择该业务线下需要上线的项目，并为项目指定分支、tag 或 commit。
 - 项目配置：新增、编辑、删除项目，维护 GitLab 地址、Project ID、默认分支、关联多条业务线。
 - 业务线配置：新增、编辑、删除业务线，维护平台、tag 前缀和 tag 模板；删除已被项目使用的业务线时，需要选择替代业务线并迁移关联项目关系。
-- 依赖顺序配置：管理员预先配置项目顺序和依赖关系，支持新增、编辑、按依赖关系整行删除和清空依赖。
+- 依赖顺序配置：管理员预先配置项目顺序和依赖关系，支持项目打包顺序上移/下移、新增、编辑、按依赖关系整行删除和清空依赖。
 - 统一打 tag：对上线单内项目按依赖顺序生成生产 tag；如果 tag pipeline 自动触发构建，会等待当前项目构建结束后再处理下一个项目。
 - Pipeline 流程：执行台按项目展示创建 Tag、Tag 触发的 Pipeline、GitLab jobs 状态；真实模式下创建 Tag 调用 GitLab Tags API，随后按 tag 查询 Pipeline，再通过 Jobs API 获取 build/deploy jobs；没有 deploy job 的 lib 类项目只展示构建链路。
 - 一键构建：支持全量、后端、前端三种队列，触发对应 pipeline 内 manual 构建 job。

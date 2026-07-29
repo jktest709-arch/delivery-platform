@@ -98,6 +98,7 @@ type DependencyRow = {
   dependencyCode: string;
   isEmpty: boolean;
   isEditing: boolean;
+  isFirstForProject: boolean;
 };
 
 const selectedProjectCodes = ref<string[]>([]);
@@ -178,6 +179,7 @@ const dependencyRows = computed<DependencyRow[]>(() => {
         dependencyCode: "",
         isEmpty: false,
         isEditing: true,
+        isFirstForProject: true,
       });
       continue;
     }
@@ -190,18 +192,20 @@ const dependencyRows = computed<DependencyRow[]>(() => {
         dependencyCode: "",
         isEmpty: true,
         isEditing: false,
+        isFirstForProject: true,
       });
       continue;
     }
-    for (const dependencyCode of dependencies) {
+    dependencies.forEach((dependencyCode, index) => {
       rows.push({
         key: `${project.code}:${dependencyCode}`,
         project,
         dependencyCode,
         isEmpty: false,
         isEditing: false,
+        isFirstForProject: index === 0,
       });
-    }
+    });
   }
   return rows;
 });
@@ -1040,6 +1044,29 @@ async function deleteDependency(project: Project, dependencyCode: string) {
   });
 }
 
+function canMoveProjectOrder(project: Project, direction: -1 | 1) {
+  const index = orderedProjects.value.findIndex((item) => item.code === project.code);
+  const targetIndex = index + direction;
+  return index >= 0 && targetIndex >= 0 && targetIndex < orderedProjects.value.length;
+}
+
+async function moveProjectOrder(project: Project, direction: -1 | 1) {
+  const orderedCodes = orderedProjects.value.map((item) => item.code);
+  const index = orderedCodes.indexOf(project.code);
+  const targetIndex = index + direction;
+  if (index < 0 || targetIndex < 0 || targetIndex >= orderedCodes.length) {
+    return;
+  }
+  [orderedCodes[index], orderedCodes[targetIndex]] = [orderedCodes[targetIndex], orderedCodes[index]];
+
+  await run(async () => {
+    const nextProjects = await api.updateProjectOrder(orderedCodes);
+    syncProjectState(nextProjects);
+    projects.value = nextProjects;
+    message.value = `${project.name} 已${direction < 0 ? "上移" : "下移"}，打包顺序已保存`;
+  });
+}
+
 function tagStepState(row: ReleaseProject) {
   if (row.targetTag && row.status !== "pending") {
     return "done";
@@ -1840,7 +1867,25 @@ function statusLabel(status: string) {
             </thead>
             <tbody>
               <tr v-for="row in dependencyRows" :key="row.key">
-                <td>{{ row.project.sortOrder }}</td>
+                <td>
+                  <div v-if="row.isFirstForProject" class="order-cell">
+                    <strong>{{ row.project.sortOrder }}</strong>
+                    <div class="order-actions">
+                      <button
+                        :disabled="loading || !canMoveProjectOrder(row.project, -1)"
+                        @click="moveProjectOrder(row.project, -1)"
+                      >
+                        上移
+                      </button>
+                      <button
+                        :disabled="loading || !canMoveProjectOrder(row.project, 1)"
+                        @click="moveProjectOrder(row.project, 1)"
+                      >
+                        下移
+                      </button>
+                    </div>
+                  </div>
+                </td>
                 <td>
                   <strong>{{ row.project.name }}</strong>
                   <small>{{ row.project.code }}</small>

@@ -54,6 +54,10 @@ type projectRequest struct {
 	Enabled           *bool    `json:"enabled"`
 }
 
+type projectOrderRequest struct {
+	Codes []string `json:"codes"`
+}
+
 type businessLineRequest struct {
 	Code        string `json:"code"`
 	Name        string `json:"name"`
@@ -230,6 +234,65 @@ func (h Handler) listProjects(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, projects)
+}
+
+func (h Handler) updateProjectOrder(c *gin.Context) {
+	var req projectOrderRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+
+	codes := make([]string, 0, len(req.Codes))
+	seen := map[string]bool{}
+	for _, rawCode := range req.Codes {
+		code := strings.TrimSpace(rawCode)
+		if code == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "项目 Code 不能为空"})
+			return
+		}
+		if seen[code] {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "项目顺序中存在重复项目: " + code})
+			return
+		}
+		seen[code] = true
+		codes = append(codes, code)
+	}
+
+	var projects []model.Project
+	if err := h.db.Where("enabled = ?", true).Find(&projects).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	if len(codes) != len(projects) {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "项目顺序需包含所有启用项目"})
+		return
+	}
+	projectByCode := map[string]model.Project{}
+	for _, project := range projects {
+		projectByCode[project.Code] = project
+	}
+	for _, code := range codes {
+		if _, ok := projectByCode[code]; !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "项目不存在或已停用: " + code})
+			return
+		}
+	}
+
+	err := h.db.Transaction(func(tx *gorm.DB) error {
+		for index, code := range codes {
+			project := projectByCode[code]
+			if err := tx.Model(&model.Project{}).Where("id = ?", project.ID).Update("sort_order", (index+1)*10).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+	h.listProjects(c)
 }
 
 func (h Handler) updateProject(c *gin.Context) {

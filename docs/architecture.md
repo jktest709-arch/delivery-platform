@@ -71,6 +71,7 @@ sequenceDiagram
 | --- | --- | --- |
 | `POST` | `/api/auth/login` | 登录 |
 | `GET` | `/api/projects` | 项目与依赖配置 |
+| `PUT` | `/api/projects/order` | 保存项目打包顺序 |
 | `PUT` | `/api/projects/:code` | 保存项目 GitLab 配置 |
 | `GET` | `/api/business-lines` | 业务线 tag 配置 |
 | `PUT` | `/api/dependencies/:code` | 保存项目依赖 |

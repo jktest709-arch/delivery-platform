@@ -89,6 +89,39 @@ func TestProjectConfigCanCreateUpdateAndDeleteProject(t *testing.T) {
 	assertProjectMissing(t, recorder.Body.Bytes(), "search-api")
 }
 
+func TestProjectOrderCanBeUpdated(t *testing.T) {
+	router := newTestRouter(t)
+	token := login(t, router)
+
+	recorder := authedRequest(t, router, token, http.MethodGet, "/api/projects", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /api/projects status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	codes := projectCodesFromResponse(t, recorder.Body.Bytes())
+	if len(codes) < 2 {
+		t.Fatalf("expected at least two seeded projects, got %v", codes)
+	}
+	codes[0], codes[1] = codes[1], codes[0]
+
+	body, err := json.Marshal(struct {
+		Codes []string `json:"codes"`
+	}{Codes: codes})
+	if err != nil {
+		t.Fatalf("encode project order request: %v", err)
+	}
+	recorder = authedRequest(t, router, token, http.MethodPut, "/api/projects/order", string(body))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PUT /api/projects/order status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	assertProjectOrder(t, recorder.Body.Bytes(), codes)
+
+	recorder = authedRequest(t, router, token, http.MethodGet, "/api/projects", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /api/projects after order update status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	assertProjectOrder(t, recorder.Body.Bytes(), codes)
+}
+
 func TestBusinessLineConfigCanCreateAndDelete(t *testing.T) {
 	router := newTestRouter(t)
 	token := login(t, router)
@@ -374,6 +407,36 @@ func assertProjectMissing(t *testing.T, body []byte, code string) {
 	for _, project := range payload {
 		if project["code"] == code {
 			t.Fatalf("project %s should be absent after deletion", code)
+		}
+	}
+}
+
+func projectCodesFromResponse(t *testing.T, body []byte) []string {
+	t.Helper()
+	var payload []map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode projects response: %v", err)
+	}
+	codes := make([]string, 0, len(payload))
+	for _, project := range payload {
+		code, ok := project["code"].(string)
+		if !ok || code == "" {
+			t.Fatalf("project code = %v, want string", project["code"])
+		}
+		codes = append(codes, code)
+	}
+	return codes
+}
+
+func assertProjectOrder(t *testing.T, body []byte, codes []string) {
+	t.Helper()
+	actual := projectCodesFromResponse(t, body)
+	if len(actual) != len(codes) {
+		t.Fatalf("project order length = %d, want %d: %v", len(actual), len(codes), actual)
+	}
+	for index, expected := range codes {
+		if actual[index] != expected {
+			t.Fatalf("project order[%d] = %s, want %s; actual order = %v", index, actual[index], expected, actual)
 		}
 	}
 }

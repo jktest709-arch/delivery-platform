@@ -498,6 +498,28 @@ tr:last-child td {
   white-space: nowrap;
 }
 
+.order-cell {
+  display: flex;
+  min-width: 138px;
+  align-items: center;
+  gap: 8px;
+}
+
+.order-cell strong {
+  min-width: 28px;
+}
+
+.order-actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.order-actions button {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
 .status.pending,
 .status.tagged {
   background: #eef2f7;
