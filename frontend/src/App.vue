@@ -95,6 +95,7 @@ const newProjectForm = reactive<ProjectForm>(emptyProjectForm());
 const editingLineCode = ref<string | null>(null);
 const lineDrafts = reactive<Record<string, BusinessLineForm>>({});
 const lineReplacementCodes = reactive<Record<string, string>>({});
+const deletingLineCode = ref<string | null>(null);
 const showNewLineForm = ref(false);
 const newLineForm = reactive<BusinessLineForm>(emptyBusinessLineForm());
 const editingDependencyCode = ref<string | null>(null);
@@ -271,6 +272,9 @@ function syncLineState(lineResult: BusinessLine[]) {
   }
   if (editingLineCode.value && !activeCodes.has(editingLineCode.value)) {
     editingLineCode.value = null;
+  }
+  if (deletingLineCode.value && !activeCodes.has(deletingLineCode.value)) {
+    deletingLineCode.value = null;
   }
   for (const line of lineResult) {
     const options = replacementLineOptions(line.code);
@@ -532,6 +536,7 @@ function openNewLineForm() {
   Object.assign(newLineForm, emptyBusinessLineForm());
   showNewLineForm.value = true;
   editingLineCode.value = null;
+  deletingLineCode.value = null;
 }
 
 function cancelNewLineForm() {
@@ -541,6 +546,7 @@ function cancelNewLineForm() {
 function startLineEdit(line: BusinessLine) {
   lineDrafts[line.code] = lineToForm(line);
   editingLineCode.value = line.code;
+  deletingLineCode.value = null;
   showNewLineForm.value = false;
 }
 
@@ -583,6 +589,30 @@ function replacementLineOptions(code: string) {
   return lines.value.filter((line) => line.code !== code);
 }
 
+function prepareLineDelete(line: BusinessLine) {
+  const usageCount = lineUsageCount(line.code);
+  if (usageCount === 0) {
+    void deleteLine(line);
+    return;
+  }
+  const options = replacementLineOptions(line.code);
+  if (options.length === 0) {
+    error.value = "该业务线已被项目使用，请先新增替代业务线";
+    return;
+  }
+  if (!lineReplacementCodes[line.code] || !options.some((item) => item.code === lineReplacementCodes[line.code])) {
+    lineReplacementCodes[line.code] = options[0].code;
+  }
+  deletingLineCode.value = line.code;
+  editingLineCode.value = null;
+}
+
+function cancelLineDelete(code: string) {
+  if (deletingLineCode.value === code) {
+    deletingLineCode.value = null;
+  }
+}
+
 async function deleteLine(line: BusinessLine) {
   const usageCount = lineUsageCount(line.code);
   const replacementCode = usageCount > 0 ? lineReplacementCodes[line.code] : "";
@@ -600,6 +630,7 @@ async function deleteLine(line: BusinessLine) {
     projects.value = projectResult;
     syncProjectState(projectResult);
     syncLineState(lines.value);
+    cancelLineDelete(line.code);
     cancelLineEdit(line.code);
     message.value = `${line.name} 已删除`;
   });
@@ -1169,69 +1200,82 @@ function statusLabel(status: string) {
                 <th>Tag 前缀</th>
                 <th>Tag 模板</th>
                 <th>审批人</th>
-                <th>关联项目 / 迁移到</th>
                 <th>操作</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="line in lines" :key="line.code">
-                <td>
-                  <template v-if="editingLineCode === line.code">
-                    <input v-model="lineDraft(line).name" />
-                    <small>{{ line.code }}</small>
-                  </template>
-                  <template v-else>
-                    <strong>{{ line.name }}</strong>
-                    <small>{{ line.code }}</small>
-                  </template>
-                </td>
-                <td>
-                  <input v-if="editingLineCode === line.code" v-model="lineDraft(line).platform" />
-                  <span v-else>{{ line.platform }}</span>
-                </td>
-                <td>
-                  <input v-if="editingLineCode === line.code" v-model="lineDraft(line).tagPrefix" />
-                  <code v-else>{{ line.tagPrefix }}</code>
-                </td>
-                <td>
-                  <input v-if="editingLineCode === line.code" v-model="lineDraft(line).tagTemplate" />
-                  <code v-else>{{ line.tagTemplate }}</code>
-                </td>
-                <td>
-                  <input v-if="editingLineCode === line.code" v-model="lineDraft(line).approver" />
-                  <span v-else>{{ line.approver }}</span>
-                </td>
-                <td class="stack-cell">
-                  <span>{{ lineUsageCount(line.code) }} 个项目</span>
-                  <select
-                    v-if="lineUsageCount(line.code) > 0"
-                    v-model="lineReplacementCodes[line.code]"
-                    :disabled="replacementLineOptions(line.code).length === 0"
-                  >
-                    <option v-for="option in replacementLineOptions(line.code)" :key="option.code" :value="option.code">
-                      {{ option.name }}
-                    </option>
-                  </select>
-                </td>
-                <td class="inline-actions">
-                  <template v-if="editingLineCode === line.code">
-                    <button class="primary" :disabled="loading" @click="saveLineDraft(line)">保存</button>
-                    <button :disabled="loading" @click="cancelLineEdit(line.code)">取消</button>
-                  </template>
-                  <template v-else>
-                    <button :disabled="loading" @click="startLineEdit(line)">编辑</button>
-                    <button
-                      class="danger-button"
-                      :disabled="
-                        loading || (lineUsageCount(line.code) > 0 && replacementLineOptions(line.code).length === 0)
-                      "
-                      @click="deleteLine(line)"
-                    >
-                      删除
-                    </button>
-                  </template>
-                </td>
-              </tr>
+              <template v-for="line in lines" :key="line.code">
+                <tr>
+                  <td>
+                    <template v-if="editingLineCode === line.code">
+                      <input v-model="lineDraft(line).name" />
+                      <small>{{ line.code }}</small>
+                    </template>
+                    <template v-else>
+                      <strong>{{ line.name }}</strong>
+                      <small>{{ line.code }}</small>
+                    </template>
+                  </td>
+                  <td>
+                    <input v-if="editingLineCode === line.code" v-model="lineDraft(line).platform" />
+                    <span v-else>{{ line.platform }}</span>
+                  </td>
+                  <td>
+                    <input v-if="editingLineCode === line.code" v-model="lineDraft(line).tagPrefix" />
+                    <code v-else>{{ line.tagPrefix }}</code>
+                  </td>
+                  <td>
+                    <input v-if="editingLineCode === line.code" v-model="lineDraft(line).tagTemplate" />
+                    <code v-else>{{ line.tagTemplate }}</code>
+                  </td>
+                  <td>
+                    <input v-if="editingLineCode === line.code" v-model="lineDraft(line).approver" />
+                    <span v-else>{{ line.approver }}</span>
+                  </td>
+                  <td class="inline-actions">
+                    <template v-if="editingLineCode === line.code">
+                      <button class="primary" :disabled="loading" @click="saveLineDraft(line)">保存</button>
+                      <button :disabled="loading" @click="cancelLineEdit(line.code)">取消</button>
+                    </template>
+                    <template v-else>
+                      <button :disabled="loading" @click="startLineEdit(line)">编辑</button>
+                      <button
+                        class="danger-button"
+                        :disabled="
+                          loading || (lineUsageCount(line.code) > 0 && replacementLineOptions(line.code).length === 0)
+                        "
+                        @click="prepareLineDelete(line)"
+                      >
+                        删除
+                      </button>
+                    </template>
+                  </td>
+                </tr>
+                <tr v-if="deletingLineCode === line.code" class="inline-confirm-row">
+                  <td colspan="6">
+                    <div class="inline-confirm">
+                      <div>
+                        <strong>迁移后删除</strong>
+                        <small>{{ lineUsageCount(line.code) }} 个项目正在使用 {{ line.name }}</small>
+                      </div>
+                      <label>
+                        <span>迁移到</span>
+                        <select v-model="lineReplacementCodes[line.code]">
+                          <option
+                            v-for="option in replacementLineOptions(line.code)"
+                            :key="option.code"
+                            :value="option.code"
+                          >
+                            {{ option.name }}
+                          </option>
+                        </select>
+                      </label>
+                      <button class="danger-button" :disabled="loading" @click="deleteLine(line)">确认删除</button>
+                      <button :disabled="loading" @click="cancelLineDelete(line.code)">取消</button>
+                    </div>
+                  </td>
+                </tr>
+              </template>
             </tbody>
           </table>
         </div>

@@ -508,6 +508,17 @@ tr:last-child td {
   background: var(--red-bg);
 }
 
+.inline-confirm-row td {
+  background: #f8fafc;
+}
+
+.inline-confirm {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) minmax(220px, 300px) auto auto;
+  gap: 10px;
+  align-items: end;
+}
+
 .dependency-relation {
   display: inline-flex;
   min-height: 30px;

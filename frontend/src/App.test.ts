@@ -157,13 +157,24 @@ describe("App", () => {
 
     await wrapper.findAll("button").find((item) => item.text() === "Tag 与依赖")!.trigger("click");
     expect(wrapper.text()).toContain("新增业务线");
-    expect(wrapper.text()).toContain("关联项目 / 迁移到");
-    expect(wrapper.text()).toContain("1 个项目");
     expect(wrapper.text()).toContain("项目依赖顺序");
     expect(wrapper.text()).toContain("新增依赖关系");
     expect(wrapper.text()).toContain("删除整行");
     expect(wrapper.text()).toContain("编辑");
     expect(wrapper.text()).toContain("删除");
+    expect(wrapper.text()).not.toContain("关联项目 / 迁移到");
+
+    const opsDeleteButton = wrapper
+      .findAll("tr")
+      .find((row) => row.text().includes("OPS 平台业务线"))
+      ?.findAll("button")
+      .find((button) => button.text() === "删除");
+    expect(opsDeleteButton, "missing OPS delete button").toBeTruthy();
+    await opsDeleteButton!.trigger("click");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain("迁移后删除");
+    expect(wrapper.text()).toContain("1 个项目");
+    expect(wrapper.text()).toContain("迁移到");
 
     await wrapper.findAll("button").find((item) => item.text() === "发布历史")!.trigger("click");
     expect(wrapper.text()).toContain("PRD-20260729-001");
