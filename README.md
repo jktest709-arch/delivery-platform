@@ -125,6 +125,13 @@ GITLAB_TOKEN=<Personal Access Token 或 Project Access Token>
 
 Token 至少需要具备创建 tag、读取 pipeline/jobs、触发 manual job 的权限。项目配置里的 `GitLab Project ID` 支持数字 ID，也支持 `group/project` 路径；这里不要填写 `https://gitlab.../group/project` 这种完整仓库 URL。
 
+如果统一打 tag 返回 `403 Forbidden`，说明已经进入真实 GitLab 调用，但当前 Token 被 GitLab 拒绝创建 tag。优先检查：
+
+- Token 对应用户是否至少拥有该项目创建 tag 的权限，通常建议使用 Maintainer 或项目级 Access Token。
+- Token scope 是否包含 API 调用权限。
+- GitLab 项目 `Settings -> Repository -> Protected tags` 是否配置了 `ftprd-*`、`aaprd-*` 等受保护 tag 规则，并且允许该用户/角色创建。
+- 上线单里选择的源 ref 是否正确；如果是从分支或 commit 发布，不要把源 ref 填成另一个生产 tag。
+
 ## 当前功能
 
 - 上线单申请：开发先指定本次发布业务线，再选择该业务线下需要上线的项目，并为项目指定分支、tag 或 commit。

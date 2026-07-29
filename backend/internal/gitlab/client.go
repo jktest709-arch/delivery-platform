@@ -71,6 +71,16 @@ func (c *Client) CreateTag(ctx context.Context, projectID, tagName, ref string) 
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("PRIVATE-TOKEN", c.token)
 	if err := c.do(req, nil); err != nil {
+		if isForbiddenError(err) {
+			return fmt.Errorf(
+				"create tag %q from ref %q for GitLab project %q failed: %w；请检查 GITLAB_TOKEN 对该项目是否具备创建 tag 权限，以及 GitLab Protected Tags 是否允许当前用户创建 %q 这类 tag",
+				tagName,
+				ref,
+				projectID,
+				err,
+				tagName,
+			)
+		}
 		return fmt.Errorf("create tag %q from ref %q for GitLab project %q: %w", tagName, ref, projectID, err)
 	}
 	return nil
@@ -211,6 +221,10 @@ func normalizeBaseURL(baseURL string) string {
 		baseURL = strings.TrimRight(baseURL[:len(baseURL)-len("/api/v4")], "/")
 	}
 	return baseURL
+}
+
+func isForbiddenError(err error) bool {
+	return strings.Contains(err.Error(), "403 Forbidden")
 }
 
 func (c *Client) do(req *http.Request, out interface{}) error {

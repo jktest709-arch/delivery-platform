@@ -70,3 +70,33 @@ func TestCreateTagErrorIncludesOperationAndEndpoint(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateTagForbiddenErrorIncludesPermissionHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`403 Forbidden`))
+	}))
+	defer server.Close()
+
+	client := NewClient(Config{
+		BaseURL: server.URL,
+		Token:   "token",
+		DryRun:  false,
+	})
+
+	err := client.CreateTag(context.Background(), "143", "ftprd-20260729160201-0001", "master")
+	if err == nil {
+		t.Fatal("create tag succeeded unexpectedly")
+	}
+	message := err.Error()
+	for _, want := range []string{
+		"GITLAB_TOKEN",
+		"创建 tag 权限",
+		"Protected Tags",
+		"ftprd-20260729160201-0001",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("error %q does not contain %q", message, want)
+		}
+	}
+}
