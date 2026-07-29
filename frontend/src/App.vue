@@ -73,6 +73,10 @@ type SourceForm = {
 
 type ProjectForm = ProjectPayload;
 type BusinessLineForm = BusinessLinePayload;
+type DependencyForm = {
+  projectCode: string;
+  dependencyCode: string;
+};
 
 const selectedProjectCodes = ref<string[]>([]);
 const sourceForms = reactive<Record<string, SourceForm>>({});
@@ -87,6 +91,11 @@ const showNewLineForm = ref(false);
 const newLineForm = reactive<BusinessLineForm>(emptyBusinessLineForm());
 const editingDependencyCode = ref<string | null>(null);
 const dependencyDrafts = reactive<Record<string, string>>({});
+const showNewDependencyForm = ref(false);
+const newDependencyForm = reactive<DependencyForm>({
+  projectCode: "",
+  dependencyCode: "",
+});
 
 const canOperate = computed(() => {
   return user.value?.role === "release_manager" || user.value?.role === "admin";
@@ -192,6 +201,9 @@ function syncProjectState(projectResult: Project[]) {
   }
   if (editingDependencyCode.value && !activeCodes.has(editingDependencyCode.value)) {
     editingDependencyCode.value = null;
+  }
+  if (showNewDependencyForm.value && !activeCodes.has(newDependencyForm.projectCode)) {
+    Object.assign(newDependencyForm, emptyDependencyForm());
   }
   if (selectedProjectCodes.value.length === 0) {
     selectedProjectCodes.value = projectResult.slice(0, 5).map((project) => project.code);
@@ -524,6 +536,71 @@ async function saveDependencyDraft(project: Project) {
 async function clearDependencyDraft(project: Project) {
   dependencyDrafts[project.code] = "";
   await saveDependencyDraft(project);
+}
+
+function emptyDependencyForm(): DependencyForm {
+  const project = orderedProjects.value.find((item) => availableDependenciesForProject(item.code).length > 0);
+  const dependency = project ? availableDependenciesForProject(project.code)[0] : null;
+  return {
+    projectCode: project?.code ?? orderedProjects.value[0]?.code ?? "",
+    dependencyCode: dependency?.code ?? "",
+  };
+}
+
+function dependencyProjectName(code: string) {
+  return projects.value.find((project) => project.code === code)?.name ?? code;
+}
+
+function availableDependenciesForProject(projectCode: string) {
+  const project = projects.value.find((item) => item.code === projectCode);
+  if (!project) {
+    return [];
+  }
+  const existing = new Set(projectDependencies(project));
+  return orderedProjects.value.filter((candidate) => candidate.code !== projectCode && !existing.has(candidate.code));
+}
+
+function openNewDependencyForm() {
+  Object.assign(newDependencyForm, emptyDependencyForm());
+  showNewDependencyForm.value = true;
+  editingDependencyCode.value = null;
+}
+
+function cancelNewDependencyForm() {
+  showNewDependencyForm.value = false;
+}
+
+function syncNewDependencyCandidate() {
+  newDependencyForm.dependencyCode = availableDependenciesForProject(newDependencyForm.projectCode)[0]?.code ?? "";
+}
+
+async function createDependencyFromDraft() {
+  const project = projects.value.find((item) => item.code === newDependencyForm.projectCode);
+  if (!project || !newDependencyForm.dependencyCode) {
+    error.value = "请选择项目和依赖项目";
+    return;
+  }
+  const dependencies = Array.from(new Set([...projectDependencies(project), newDependencyForm.dependencyCode]));
+  await run(async () => {
+    const nextProjects = await api.updateDependencies(project.code, dependencies);
+    syncProjectState(nextProjects);
+    projects.value = nextProjects;
+    showNewDependencyForm.value = false;
+    message.value = `${project.name} 已新增依赖 ${dependencyProjectName(newDependencyForm.dependencyCode)}`;
+  });
+}
+
+async function deleteDependency(project: Project, dependencyCode: string) {
+  if (!window.confirm(`确认删除 ${project.name} 对 ${dependencyProjectName(dependencyCode)} 的依赖？`)) {
+    return;
+  }
+  const dependencies = projectDependencies(project).filter((code) => code !== dependencyCode);
+  await run(async () => {
+    const nextProjects = await api.updateDependencies(project.code, dependencies);
+    syncProjectState(nextProjects);
+    projects.value = nextProjects;
+    message.value = `${project.name} 已删除依赖 ${dependencyProjectName(dependencyCode)}`;
+  });
 }
 
 function upsertRelease(updated: Release) {
@@ -1026,7 +1103,44 @@ function statusLabel(status: string) {
 
         <div class="section-head">
           <h2>项目依赖顺序</h2>
+          <button class="primary" :disabled="loading" @click="openNewDependencyForm">新增依赖关系</button>
         </div>
+
+        <form v-if="showNewDependencyForm" class="config-form" @submit.prevent="createDependencyFromDraft">
+          <div class="config-grid dependency-form-grid">
+            <label>
+              <span>项目</span>
+              <select v-model="newDependencyForm.projectCode" required @change="syncNewDependencyCandidate">
+                <option v-for="project in orderedProjects" :key="project.code" :value="project.code">
+                  {{ project.name }}
+                </option>
+              </select>
+            </label>
+            <label>
+              <span>依赖项目</span>
+              <select
+                v-model="newDependencyForm.dependencyCode"
+                :disabled="availableDependenciesForProject(newDependencyForm.projectCode).length === 0"
+                required
+              >
+                <option
+                  v-for="candidate in availableDependenciesForProject(newDependencyForm.projectCode)"
+                  :key="candidate.code"
+                  :value="candidate.code"
+                >
+                  {{ candidate.name }}
+                </option>
+              </select>
+            </label>
+          </div>
+          <div class="actions compact">
+            <button type="button" :disabled="loading" @click="cancelNewDependencyForm">取消</button>
+            <button class="primary" :disabled="loading || !newDependencyForm.dependencyCode" type="submit">
+              保存新增
+            </button>
+          </div>
+        </form>
+
         <div class="table-wrap config-table">
           <table>
             <thead>
@@ -1051,6 +1165,15 @@ function statusLabel(status: string) {
                     v-if="editingDependencyCode === project.code"
                     v-model="dependencyDrafts[project.code]"
                   />
+                  <div v-else-if="projectDependencies(project).length" class="dependency-tags">
+                    <span v-for="dependency in projectDependencies(project)" :key="dependency" class="dependency-tag">
+                      <code>{{ dependency }}</code>
+                      <small>{{ dependencyProjectName(dependency) }}</small>
+                      <button class="danger-button" :disabled="loading" @click="deleteDependency(project, dependency)">
+                        删除
+                      </button>
+                    </span>
+                  </div>
                   <span v-else>{{ dependencyValue(project) }}</span>
                 </td>
                 <td class="inline-actions">

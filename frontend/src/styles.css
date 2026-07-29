@@ -422,6 +422,10 @@ tr:last-child td {
   grid-column: span 2;
 }
 
+.dependency-form-grid {
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+}
+
 .actions.compact {
   align-items: center;
   margin-top: 0;
@@ -492,6 +496,28 @@ tr:last-child td {
 .danger-button:hover:not(:disabled) {
   border-color: #dc8f88;
   background: var(--red-bg);
+}
+
+.dependency-tags {
+  display: flex;
+  max-width: 560px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dependency-tag {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #f8fafc;
+  padding: 4px 5px 4px 8px;
+}
+
+.dependency-tag small {
+  display: inline;
 }
 
 .history-layout {
