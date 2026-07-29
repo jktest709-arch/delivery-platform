@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 import { api, clearToken, getToken, setToken } from "./api";
 import type {
   BusinessLine,
@@ -72,12 +72,12 @@ const loginForm = reactive({
 });
 
 const releaseForm = reactive({
+  businessLineCode: "",
   releaseWindow: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 16),
   remark: "",
 });
 
 type SourceForm = {
-  businessLineCode: string;
   sourceType: SourceType;
   sourceRef: string;
 };
@@ -149,6 +149,13 @@ const orderedProjects = computed(() => {
   return [...projects.value].sort((a, b) => a.sortOrder - b.sortOrder);
 });
 
+const releaseSelectableProjects = computed(() => {
+  if (!releaseForm.businessLineCode) {
+    return orderedProjects.value;
+  }
+  return orderedProjects.value.filter((project) => projectBusinessLineCodes(project).includes(releaseForm.businessLineCode));
+});
+
 const dependencyRows = computed<DependencyRow[]>(() => {
   const rows: DependencyRow[] = [];
   for (const project of orderedProjects.value) {
@@ -189,7 +196,7 @@ const dependencyRows = computed<DependencyRow[]>(() => {
 
 const selectedProjects = computed(() => {
   const selected = new Set(selectedProjectCodes.value);
-  return orderedProjects.value.filter((project) => selected.has(project.code));
+  return releaseSelectableProjects.value.filter((project) => selected.has(project.code));
 });
 
 const selectedBackendCount = computed(() => {
@@ -199,6 +206,11 @@ const selectedBackendCount = computed(() => {
 const selectedFrontendCount = computed(() => {
   return selectedProjects.value.filter((project) => project.kind === "frontend").length;
 });
+
+watch(
+  () => releaseForm.businessLineCode,
+  () => syncSelectedProjectsForReleaseLine(),
+);
 
 onMounted(async () => {
   if (!getToken()) {
@@ -289,9 +301,7 @@ function syncProjectState(projectResult: Project[]) {
   if (showNewDependencyForm.value && !activeCodes.has(newDependencyForm.projectCode)) {
     Object.assign(newDependencyForm, emptyDependencyForm());
   }
-  if (selectedProjectCodes.value.length === 0) {
-    selectedProjectCodes.value = projectResult.slice(0, 5).map((project) => project.code);
-  }
+  syncSelectedProjectsForReleaseLine();
 }
 
 function syncLineState(lineResult: BusinessLine[]) {
@@ -318,6 +328,10 @@ function syncLineState(lineResult: BusinessLine[]) {
       lineReplacementCodes[line.code] = options[0]?.code ?? "";
     }
   }
+  if (!releaseForm.businessLineCode || !activeCodes.has(releaseForm.businessLineCode)) {
+    releaseForm.businessLineCode = lineResult[0]?.code ?? "";
+  }
+  syncSelectedProjectsForReleaseLine();
 }
 
 function syncUserState(userResult: User[]) {
@@ -335,14 +349,9 @@ function syncUserState(userResult: User[]) {
 function projectSourceForm(project: Project): SourceForm {
   if (!sourceForms[project.code]) {
     sourceForms[project.code] = {
-      businessLineCode: defaultBusinessLineCode(project),
       sourceType: "branch",
       sourceRef: project.defaultBranch || "main",
     };
-  }
-  const codes = projectBusinessLineCodes(project);
-  if (codes.length > 0 && !codes.includes(sourceForms[project.code].businessLineCode)) {
-    sourceForms[project.code].businessLineCode = codes[0];
   }
   return sourceForms[project.code];
 }
@@ -365,10 +374,6 @@ function uniqueCodes(codes: string[]) {
     result.push(code);
   }
   return result;
-}
-
-function defaultBusinessLineCode(project: Project) {
-  return project.businessLineCode || projectBusinessLineCodes(project)[0] || "";
 }
 
 function projectBusinessLineOptions(project: Project) {
@@ -409,6 +414,14 @@ function projectFormLineOptions(form: ProjectForm) {
   return lines.value.filter((line) => selectedCodes.includes(line.code));
 }
 
+function syncSelectedProjectsForReleaseLine() {
+  const availableCodes = new Set(releaseSelectableProjects.value.map((project) => project.code));
+  selectedProjectCodes.value = selectedProjectCodes.value.filter((code) => availableCodes.has(code));
+  if (selectedProjectCodes.value.length === 0 && releaseSelectableProjects.value.length > 0) {
+    selectedProjectCodes.value = releaseSelectableProjects.value.slice(0, 5).map((project) => project.code);
+  }
+}
+
 function projectDependencies(project: Project) {
   return Array.isArray(project.dependencies) ? project.dependencies : [];
 }
@@ -423,13 +436,13 @@ function toggleProject(code: string) {
 
 async function submitRelease() {
   const payload: CreateReleasePayload = {
+    businessLineCode: releaseForm.businessLineCode,
     releaseWindow: new Date(releaseForm.releaseWindow).toISOString(),
     remark: releaseForm.remark,
     projects: selectedProjects.value.map((project) => {
       const form = projectSourceForm(project);
       return {
         projectCode: project.code,
-        businessLineCode: form.businessLineCode,
         sourceType: form.sourceType,
         sourceRef: form.sourceRef,
       };
@@ -1106,7 +1119,13 @@ function statusLabel(status: string) {
           </div>
         </div>
 
-        <div class="form-grid two">
+        <div class="form-grid release-grid">
+          <label>
+            <span>发布业务线</span>
+            <select v-model="releaseForm.businessLineCode" required>
+              <option v-for="line in lines" :key="line.code" :value="line.code">{{ line.name }}</option>
+            </select>
+          </label>
           <label>
             <span>上线窗口</span>
             <input v-model="releaseForm.releaseWindow" type="datetime-local" />
@@ -1131,7 +1150,7 @@ function statusLabel(status: string) {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="project in orderedProjects" :key="project.code">
+              <tr v-for="project in releaseSelectableProjects" :key="project.code">
                 <td>
                   <input
                     type="checkbox"
@@ -1145,17 +1164,7 @@ function statusLabel(status: string) {
                   <small>{{ project.gitlabProjectId }}</small>
                 </td>
                 <td>{{ kindText[project.kind] }}</td>
-                <td>
-                  <select
-                    v-if="projectBusinessLineOptions(project).length > 1"
-                    v-model="projectSourceForm(project).businessLineCode"
-                  >
-                    <option v-for="line in projectBusinessLineOptions(project)" :key="line.code" :value="line.code">
-                      {{ line.name }}
-                    </option>
-                  </select>
-                  <span v-else>{{ projectBusinessLineNames(project) }}</span>
-                </td>
+                <td>{{ projectBusinessLineNames(project) }}</td>
                 <td>
                   <select v-model="projectSourceForm(project).sourceType">
                     <option value="branch">{{ sourceText.branch }}</option>
@@ -1206,6 +1215,10 @@ function statusLabel(status: string) {
             <div>
               <small>状态</small>
               <strong>{{ statusLabel(currentRelease.status) }}</strong>
+            </div>
+            <div>
+              <small>业务线</small>
+              <strong>{{ currentRelease.businessLine?.name || "-" }}</strong>
             </div>
             <div>
               <small>上线窗口</small>

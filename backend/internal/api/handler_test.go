@@ -161,14 +161,16 @@ func TestReleaseUsesSelectedBusinessLineForTag(t *testing.T) {
 	}
 
 	releaseBody := `{
+		"businessLineCode":"aa",
 		"releaseWindow":"2026-07-29T10:00:00Z",
 		"remark":"multi line tag",
-		"projects":[{"projectCode":"base-auth","businessLineCode":"aa","sourceType":"branch","sourceRef":"master"}]
+		"projects":[{"projectCode":"base-auth","sourceType":"branch","sourceRef":"master"}]
 	}`
 	recorder = authedRequest(t, router, token, http.MethodPost, "/api/releases", releaseBody)
 	if recorder.Code != http.StatusCreated {
 		t.Fatalf("POST /api/releases status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
+	assertReleaseBusinessLine(t, recorder.Body.Bytes(), "aa")
 	assertReleaseProjectTagPrefix(t, recorder.Body.Bytes(), "base-auth", "aaprd-")
 	assertReleaseProjectBusinessLine(t, recorder.Body.Bytes(), "base-auth", "aa")
 }
@@ -487,6 +489,19 @@ func assertReleaseProjectTagPrefix(t *testing.T, body []byte, projectCode string
 		return
 	}
 	t.Fatalf("project %s not found in release response: %s", projectCode, string(body))
+}
+
+func assertReleaseBusinessLine(t *testing.T, body []byte, businessLineCode string) {
+	t.Helper()
+	var payload struct {
+		BusinessLine map[string]any `json:"businessLine"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode release response: %v", err)
+	}
+	if payload.BusinessLine["code"] != businessLineCode {
+		t.Fatalf("release businessLine = %v, want %s", payload.BusinessLine["code"], businessLineCode)
+	}
 }
 
 func assertReleaseProjectBusinessLine(t *testing.T, body []byte, projectCode string, businessLineCode string) {

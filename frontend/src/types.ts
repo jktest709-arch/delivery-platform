@@ -84,6 +84,8 @@ export type Release = {
   id: number;
   batchNo: string;
   applicant: User;
+  businessLineId?: number;
+  businessLine?: BusinessLine;
   approver?: User;
   status: string;
   releaseWindow: string;
@@ -95,11 +97,12 @@ export type Release = {
 };
 
 export type CreateReleasePayload = {
+  businessLineCode: string;
   releaseWindow: string;
   remark: string;
   projects: Array<{
     projectCode: string;
-    businessLineCode: string;
+    businessLineCode?: string;
     sourceType: SourceType;
     sourceRef: string;
   }>;

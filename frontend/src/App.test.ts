@@ -137,6 +137,8 @@ const releasesPayload = [
       role: "admin",
       status: "enabled",
     },
+    businessLineId: 1,
+    businessLine: businessLinesPayload[0],
     status: "pending",
     releaseWindow: "2026-07-29T10:00:00Z",
     remark: "回归测试",
@@ -187,8 +189,8 @@ describe("App", () => {
     await wrapper.vm.$nextTick();
 
     expect(wrapper.text()).toContain("统一认证中心");
-    expect(wrapper.text()).toContain("订单核心服务");
     expect(wrapper.text()).toContain("上线单申请");
+    expect(wrapper.text()).toContain("发布业务线");
 
     for (const tab of ["构建执行台", "项目配置", "Tag 与依赖", "发布历史", "上线单申请"]) {
       const button = wrapper.findAll("button").find((item) => item.text() === tab);

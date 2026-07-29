@@ -135,6 +135,8 @@ const releasesPayload = [
       role: "admin",
       status: "enabled",
     },
+    businessLineId: 1,
+    businessLine: businessLinesPayload[0],
     status: "pending",
     releaseWindow: "2026-07-29T10:00:00Z",
     remark: "回归测试",

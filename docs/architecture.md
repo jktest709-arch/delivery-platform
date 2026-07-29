@@ -28,7 +28,7 @@ flowchart LR
 | `projects` | 项目基础信息与 GitLab 配置 |
 | `project_business_lines` | 项目与业务线多对多关系 |
 | `project_dependencies` | 项目打包依赖 |
-| `releases` | 上线单主表 |
+| `releases` | 上线单主表，保存本次发布业务线 |
 | `release_projects` | 上线单内项目、本次业务线、来源、目标 tag、pipeline 状态 |
 | `release_events` | 发布历史时间线 |
 
@@ -42,7 +42,7 @@ sequenceDiagram
   participant DB as 数据库
   participant GL as GitLab
 
-  Dev->>Web: 选择项目、本次业务线和分支/tag/commit
+  Dev->>Web: 选择本次业务线、项目和分支/tag/commit
   Web->>API: POST /api/releases
   API->>DB: 创建上线单和项目快照
   Web->>API: POST /api/releases/:id/tag

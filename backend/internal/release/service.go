@@ -22,9 +22,10 @@ type Service struct {
 }
 
 type CreateRequest struct {
-	ReleaseWindow time.Time              `json:"releaseWindow"`
-	Remark        string                 `json:"remark"`
-	Projects      []CreateProjectRequest `json:"projects"`
+	BusinessLineCode string                 `json:"businessLineCode"`
+	ReleaseWindow    time.Time              `json:"releaseWindow"`
+	Remark           string                 `json:"remark"`
+	Projects         []CreateProjectRequest `json:"projects"`
 }
 
 type CreateProjectRequest struct {
@@ -65,6 +66,24 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 	if len(projects) != len(projectCodes) {
 		return model.Release{}, fmt.Errorf("some selected projects are not found or disabled")
 	}
+	releaseBusinessLineCode := strings.TrimSpace(req.BusinessLineCode)
+	businessLineByProjectCode := map[string]model.BusinessLine{}
+	var releaseBusinessLine model.BusinessLine
+	for _, project := range projects {
+		source := sourceByCode[project.Code]
+		requestedCode := strings.TrimSpace(source.BusinessLineCode)
+		if requestedCode == "" {
+			requestedCode = releaseBusinessLineCode
+		}
+		businessLine, err := selectProjectBusinessLine(project, requestedCode)
+		if err != nil {
+			return model.Release{}, err
+		}
+		businessLineByProjectCode[project.Code] = businessLine
+		if releaseBusinessLine.ID == 0 {
+			releaseBusinessLine = businessLine
+		}
+	}
 
 	batchNo, releaseNo, err := s.nextBatchNo(ctx)
 	if err != nil {
@@ -78,11 +97,12 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 	var created model.Release
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		created = model.Release{
-			BatchNo:       batchNo,
-			ApplicantID:   applicant.ID,
-			Status:        model.ReleaseStatusPending,
-			ReleaseWindow: req.ReleaseWindow,
-			Remark:        req.Remark,
+			BatchNo:        batchNo,
+			ApplicantID:    applicant.ID,
+			BusinessLineID: releaseBusinessLine.ID,
+			Status:         model.ReleaseStatusPending,
+			ReleaseWindow:  req.ReleaseWindow,
+			Remark:         req.Remark,
 		}
 		if err := tx.Create(&created).Error; err != nil {
 			return err
@@ -90,10 +110,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 
 		for _, project := range projects {
 			source := sourceByCode[project.Code]
-			businessLine, err := selectProjectBusinessLine(project, source.BusinessLineCode)
-			if err != nil {
-				return err
-			}
+			businessLine := businessLineByProjectCode[project.Code]
 			targetTag := renderTagAt(businessLine, releaseNo, tagTime)
 			releaseProject := model.ReleaseProject{
 				ReleaseID:      created.ID,
@@ -114,7 +131,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 			ReleaseID:  created.ID,
 			OperatorID: &applicant.ID,
 			Action:     "create_release",
-			Message:    fmt.Sprintf("提交上线申请，选择 %d 个项目。", len(projects)),
+			Message:    fmt.Sprintf("提交上线申请，业务线 %s，选择 %d 个项目。", releaseBusinessLine.Name, len(projects)),
 		}).Error
 	})
 	if err != nil {
@@ -174,6 +191,7 @@ func (s *Service) Get(ctx context.Context, id uint) (model.Release, error) {
 	var release model.Release
 	err := s.db.WithContext(ctx).
 		Preload("Applicant").
+		Preload("BusinessLine").
 		Preload("Approver").
 		Preload("Projects.BusinessLine").
 		Preload("Projects.Project.BusinessLine").
@@ -191,6 +209,7 @@ func (s *Service) List(ctx context.Context) ([]model.Release, error) {
 	var releases []model.Release
 	err := s.db.WithContext(ctx).
 		Preload("Applicant").
+		Preload("BusinessLine").
 		Preload("Approver").
 		Preload("Projects.BusinessLine").
 		Preload("Projects.Project.BusinessLine").

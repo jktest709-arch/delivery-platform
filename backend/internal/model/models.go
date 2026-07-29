@@ -94,19 +94,21 @@ type ProjectDependency struct {
 }
 
 type Release struct {
-	ID            uint             `json:"id" gorm:"primaryKey"`
-	BatchNo       string           `json:"batchNo" gorm:"size:64;uniqueIndex;not null"`
-	ApplicantID   uint             `json:"applicantId" gorm:"index;not null"`
-	Applicant     User             `json:"applicant"`
-	ApproverID    *uint            `json:"approverId" gorm:"index"`
-	Approver      *User            `json:"approver"`
-	Status        string           `json:"status" gorm:"size:32;index;not null"`
-	ReleaseWindow time.Time        `json:"releaseWindow"`
-	Remark        string           `json:"remark" gorm:"size:512"`
-	Projects      []ReleaseProject `json:"projects"`
-	Events        []ReleaseEvent   `json:"events"`
-	CreatedAt     time.Time        `json:"createdAt"`
-	UpdatedAt     time.Time        `json:"updatedAt"`
+	ID             uint             `json:"id" gorm:"primaryKey"`
+	BatchNo        string           `json:"batchNo" gorm:"size:64;uniqueIndex;not null"`
+	ApplicantID    uint             `json:"applicantId" gorm:"index;not null"`
+	Applicant      User             `json:"applicant"`
+	BusinessLineID uint             `json:"businessLineId" gorm:"index;default:0"`
+	BusinessLine   BusinessLine     `json:"businessLine"`
+	ApproverID     *uint            `json:"approverId" gorm:"index"`
+	Approver       *User            `json:"approver"`
+	Status         string           `json:"status" gorm:"size:32;index;not null"`
+	ReleaseWindow  time.Time        `json:"releaseWindow"`
+	Remark         string           `json:"remark" gorm:"size:512"`
+	Projects       []ReleaseProject `json:"projects"`
+	Events         []ReleaseEvent   `json:"events"`
+	CreatedAt      time.Time        `json:"createdAt"`
+	UpdatedAt      time.Time        `json:"updatedAt"`
 }
 
 type ReleaseProject struct {
