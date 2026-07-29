@@ -44,8 +44,6 @@ export type Project = {
   gitlabUrl: string;
   gitlabProjectId: string;
   defaultBranch: string;
-  packageJob: string;
-  deployJob: string;
   sortOrder: number;
   enabled: boolean;
   dependencies: string[] | null;
@@ -66,9 +64,22 @@ export type ReleaseProject = {
   pipelineId: string;
   buildJobId: string;
   deployJobId: string;
+  jobs: PipelineJob[];
   status: string;
   errorMessage: string;
   sortOrder: number;
+};
+
+export type PipelineJob = {
+  id: number;
+  releaseProjectId: number;
+  gitlabJobId: string;
+  name: string;
+  stage: string;
+  status: string;
+  webUrl: string;
+  manual: boolean;
+  allowFailure: boolean;
 };
 
 export type ReleaseEvent = {

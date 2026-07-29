@@ -50,8 +50,6 @@ type projectRequest struct {
 	GitLabURL         string   `json:"gitlabUrl"`
 	GitLabProjectID   string   `json:"gitlabProjectId"`
 	DefaultBranch     string   `json:"defaultBranch"`
-	PackageJob        string   `json:"packageJob"`
-	DeployJob         string   `json:"deployJob"`
 	SortOrder         int      `json:"sortOrder"`
 	Enabled           *bool    `json:"enabled"`
 }
@@ -314,8 +312,6 @@ func (h Handler) createProject(c *gin.Context) {
 		GitLabURL:       updates["git_lab_url"].(string),
 		GitLabProjectID: updates["git_lab_project_id"].(string),
 		DefaultBranch:   updates["default_branch"].(string),
-		PackageJob:      updates["package_job"].(string),
-		DeployJob:       updates["deploy_job"].(string),
 		SortOrder:       updates["sort_order"].(int),
 		Enabled:         true,
 	}
@@ -706,8 +702,6 @@ func (h Handler) projectUpdates(req projectRequest) (map[string]interface{}, []m
 		"git_lab_url":        strings.TrimSpace(req.GitLabURL),
 		"git_lab_project_id": strings.TrimSpace(req.GitLabProjectID),
 		"default_branch":     strings.TrimSpace(req.DefaultBranch),
-		"package_job":        strings.TrimSpace(req.PackageJob),
-		"deploy_job":         strings.TrimSpace(req.DeployJob),
 		"sort_order":         req.SortOrder,
 		"enabled":            enabled,
 	}, businessLines, nil

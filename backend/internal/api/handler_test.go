@@ -64,8 +64,6 @@ func TestProjectConfigCanCreateUpdateAndDeleteProject(t *testing.T) {
 		"gitlabUrl":"https://gitlab.corp/delivery/search-api",
 		"gitlabProjectId":"delivery/search-api",
 		"defaultBranch":"master",
-		"packageJob":"build-search-prd",
-		"deployJob":"deploy-search-prd",
 		"sortOrder":35,
 		"enabled":true
 	}`
@@ -150,8 +148,6 @@ func TestReleaseUsesSelectedBusinessLineForTag(t *testing.T) {
 		"gitlabUrl":"https://gitlab.corp/delivery/base-auth",
 		"gitlabProjectId":"delivery/base-auth",
 		"defaultBranch":"master",
-		"packageJob":"build-auth-prd",
-		"deployJob":"deploy-auth-prd",
 		"sortOrder":10,
 		"enabled":true
 	}`
@@ -304,6 +300,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 		&model.ProjectDependency{},
 		&model.Release{},
 		&model.ReleaseProject{},
+		&model.ReleasePipelineJob{},
 		&model.ReleaseEvent{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)

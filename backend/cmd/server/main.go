@@ -28,6 +28,7 @@ func main() {
 		&model.ProjectDependency{},
 		&model.Release{},
 		&model.ReleaseProject{},
+		&model.ReleasePipelineJob{},
 		&model.ReleaseEvent{},
 	); err != nil {
 		log.Fatalf("migrate database: %v", err)

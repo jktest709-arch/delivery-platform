@@ -15,8 +15,8 @@ flowchart LR
 
 - `internal/model`：用户、业务线、项目多业务线关联、依赖、上线单、上线项目、发布事件。
 - `internal/api`：HTTP 路由、登录鉴权、配置管理、上线单和执行接口。
-- `internal/release`：批次号生成、tag 生成、按目标分组打包、单项目重试、状态聚合。
-- `internal/gitlab`：创建 tag、触发 pipeline；dry-run 模式下只返回模拟 pipeline。
+- `internal/release`：批次号生成、tag 生成、同步 pipeline jobs、按目标分组构建、单项目重试、状态聚合。
+- `internal/gitlab`：创建 tag、按 tag 查询 pipeline、查询 pipeline jobs、触发 manual job；dry-run 模式下返回模拟 pipeline/jobs。
 - `internal/bootstrap`：初始化默认账号、业务线、项目和依赖顺序。
 
 ## 核心数据表
@@ -30,6 +30,7 @@ flowchart LR
 | `project_dependencies` | 项目打包依赖 |
 | `releases` | 上线单主表，保存本次发布业务线 |
 | `release_projects` | 上线单内项目、本次业务线、来源、目标 tag、pipeline 状态 |
+| `release_pipeline_jobs` | GitLab pipeline jobs 快照 |
 | `release_events` | 发布历史时间线 |
 
 ## 发布流程
@@ -48,11 +49,12 @@ sequenceDiagram
   Web->>API: POST /api/releases/:id/tag
   API->>GL: 创建项目 tag
   API->>DB: 更新 tag 状态
+  API->>GL: 按 tag 查询 pipeline，读取 jobs
+  API->>DB: 记录 pipeline ID、jobs 和状态
   Web->>API: POST /api/releases/:id/package?target=backend
-  API->>GL: 按配置顺序触发 pipeline，并传入 ACTION/JOB_NAME 变量
-  API->>DB: 记录 pipeline ID 和状态
+  API->>GL: play build/package manual job
   Web->>API: POST /api/releases/:id/deploy
-  API->>GL: 触发部署 pipeline，并传入 ACTION/JOB_NAME 变量
+  API->>GL: play deploy manual job
   API->>DB: 写入发布历史
 ```
 
@@ -68,7 +70,7 @@ sequenceDiagram
 | `POST` | `/api/releases` | 提交上线单 |
 | `GET` | `/api/releases` | 发布历史 |
 | `POST` | `/api/releases/:id/tag` | 统一打 tag |
-| `POST` | `/api/releases/:id/package?target=all/backend/frontend` | 一键打包 |
+| `POST` | `/api/releases/:id/package?target=all/backend/frontend` | 一键构建 |
 | `POST` | `/api/releases/:id/deploy?target=all/backend/frontend` | 一键部署 |
-| `POST` | `/api/releases/:id/projects/:releaseProjectId/package` | 单项目打包 |
+| `POST` | `/api/releases/:id/projects/:releaseProjectId/package` | 单项目构建 |
 | `POST` | `/api/releases/:id/projects/:releaseProjectId/deploy` | 单项目部署 |

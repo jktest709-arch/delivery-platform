@@ -41,8 +41,6 @@ const projectsPayload = [
     gitlabUrl: "https://gitlab.corp/delivery/base-auth",
     gitlabProjectId: "delivery/base-auth",
     defaultBranch: "master",
-    packageJob: "build-auth-prd",
-    deployJob: "deploy-auth-prd",
     sortOrder: 10,
     enabled: true,
     dependencies: null,
@@ -78,8 +76,6 @@ const projectsPayload = [
     gitlabUrl: "https://gitlab.corp/delivery/order-core",
     gitlabProjectId: "delivery/order-core",
     defaultBranch: "master",
-    packageJob: "build-order-prd",
-    deployJob: "deploy-order-prd",
     sortOrder: 20,
     enabled: true,
     dependencies: ["base-auth"],
@@ -154,6 +150,30 @@ const releasesPayload = [
         pipelineId: "",
         buildJobId: "",
         deployJobId: "",
+        jobs: [
+          {
+            id: 1,
+            releaseProjectId: 1,
+            gitlabJobId: "201",
+            name: "build-image",
+            stage: "build",
+            status: "manual",
+            webUrl: "https://gitlab.corp/delivery/base-auth/-/jobs/201",
+            manual: true,
+            allowFailure: false,
+          },
+          {
+            id: 2,
+            releaseProjectId: 1,
+            gitlabJobId: "301",
+            name: "deploy-prod",
+            stage: "deploy",
+            status: "manual",
+            webUrl: "https://gitlab.corp/delivery/base-auth/-/jobs/301",
+            manual: true,
+            allowFailure: false,
+          },
+        ],
         status: "pending",
         errorMessage: "",
         sortOrder: 10,
@@ -216,10 +236,10 @@ test("admin can log in and visit every main page without runtime errors", async 
   await expect(page.getByRole("button", { name: "删除任务" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Pipeline 流程" })).toBeVisible();
   await expect(page.getByText("GitLab Tags API")).toBeVisible();
+  await expect(page.getByText("build-image")).toBeVisible();
 
   await page.getByRole("button", { name: "项目配置" }).click();
   await expect(page.getByRole("button", { name: "新增项目" })).toBeVisible();
-  await expect(page.getByText("Pipeline 变量")).toBeVisible();
   await expect(page.getByRole("button", { name: "编辑" }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "删除" }).first()).toBeVisible();
   await page.getByRole("button", { name: "新增项目" }).click();

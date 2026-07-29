@@ -43,8 +43,6 @@ const projectsPayload = [
     gitlabUrl: "https://gitlab.corp/delivery/base-auth",
     gitlabProjectId: "delivery/base-auth",
     defaultBranch: "master",
-    packageJob: "build-auth-prd",
-    deployJob: "deploy-auth-prd",
     sortOrder: 10,
     enabled: true,
     dependencies: null,
@@ -80,8 +78,6 @@ const projectsPayload = [
     gitlabUrl: "https://gitlab.corp/delivery/order-core",
     gitlabProjectId: "delivery/order-core",
     defaultBranch: "master",
-    packageJob: "build-order-prd",
-    deployJob: "deploy-order-prd",
     sortOrder: 20,
     enabled: true,
     dependencies: ["base-auth"],
@@ -156,6 +152,30 @@ const releasesPayload = [
         pipelineId: "",
         buildJobId: "",
         deployJobId: "",
+        jobs: [
+          {
+            id: 1,
+            releaseProjectId: 1,
+            gitlabJobId: "201",
+            name: "build-image",
+            stage: "build",
+            status: "manual",
+            webUrl: "https://gitlab.corp/delivery/base-auth/-/jobs/201",
+            manual: true,
+            allowFailure: false,
+          },
+          {
+            id: 2,
+            releaseProjectId: 1,
+            gitlabJobId: "301",
+            name: "deploy-prod",
+            stage: "deploy",
+            status: "manual",
+            webUrl: "https://gitlab.corp/delivery/base-auth/-/jobs/301",
+            manual: true,
+            allowFailure: false,
+          },
+        ],
         status: "pending",
         errorMessage: "",
         sortOrder: 10,
@@ -205,11 +225,11 @@ describe("App", () => {
     expect(wrapper.text()).toContain("删除任务");
     expect(wrapper.text()).toContain("Pipeline 流程");
     expect(wrapper.text()).toContain("GitLab Tags API");
-    expect(wrapper.text()).toContain("打包 Pipeline");
+    expect(wrapper.text()).toContain("构建 Jobs");
+    expect(wrapper.text()).toContain("build-image");
 
     await wrapper.findAll("button").find((item) => item.text() === "项目配置")!.trigger("click");
     expect(wrapper.text()).toContain("新增项目");
-    expect(wrapper.text()).toContain("Pipeline 变量");
     expect(wrapper.text()).toContain("编辑");
     expect(wrapper.text()).toContain("删除");
     await wrapper.findAll("button").find((item) => item.text() === "新增项目")!.trigger("click");

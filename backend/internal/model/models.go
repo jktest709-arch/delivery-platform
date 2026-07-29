@@ -69,8 +69,6 @@ type Project struct {
 	GitLabURL         string         `json:"gitlabUrl" gorm:"size:255;not null"`
 	GitLabProjectID   string         `json:"gitlabProjectId" gorm:"size:255;not null"`
 	DefaultBranch     string         `json:"defaultBranch" gorm:"size:128;not null"`
-	PackageJob        string         `json:"packageJob" gorm:"size:128;not null"`
-	DeployJob         string         `json:"deployJob" gorm:"size:128;not null"`
 	SortOrder         int            `json:"sortOrder" gorm:"index;not null"`
 	Enabled           bool           `json:"enabled" gorm:"default:true"`
 	ProjectDependency []ProjectDependency
@@ -112,23 +110,38 @@ type Release struct {
 }
 
 type ReleaseProject struct {
-	ID             uint         `json:"id" gorm:"primaryKey"`
-	ReleaseID      uint         `json:"releaseId" gorm:"index;not null"`
-	ProjectID      uint         `json:"projectId" gorm:"index;not null"`
-	Project        Project      `json:"project"`
-	BusinessLineID uint         `json:"businessLineId" gorm:"index;default:0"`
-	BusinessLine   BusinessLine `json:"businessLine"`
-	SourceType     string       `json:"sourceType" gorm:"size:32;not null"`
-	SourceRef      string       `json:"sourceRef" gorm:"size:255;not null"`
-	TargetTag      string       `json:"targetTag" gorm:"size:128;not null"`
-	PipelineID     string       `json:"pipelineId" gorm:"size:64"`
-	BuildJobID     string       `json:"buildJobId" gorm:"size:64"`
-	DeployJobID    string       `json:"deployJobId" gorm:"size:64"`
-	Status         string       `json:"status" gorm:"size:32;index;not null"`
-	ErrorMessage   string       `json:"errorMessage" gorm:"size:512"`
-	SortOrder      int          `json:"sortOrder" gorm:"index;not null"`
-	CreatedAt      time.Time    `json:"createdAt"`
-	UpdatedAt      time.Time    `json:"updatedAt"`
+	ID             uint                 `json:"id" gorm:"primaryKey"`
+	ReleaseID      uint                 `json:"releaseId" gorm:"index;not null"`
+	ProjectID      uint                 `json:"projectId" gorm:"index;not null"`
+	Project        Project              `json:"project"`
+	BusinessLineID uint                 `json:"businessLineId" gorm:"index;default:0"`
+	BusinessLine   BusinessLine         `json:"businessLine"`
+	SourceType     string               `json:"sourceType" gorm:"size:32;not null"`
+	SourceRef      string               `json:"sourceRef" gorm:"size:255;not null"`
+	TargetTag      string               `json:"targetTag" gorm:"size:128;not null"`
+	PipelineID     string               `json:"pipelineId" gorm:"size:64"`
+	BuildJobID     string               `json:"buildJobId" gorm:"size:64"`
+	DeployJobID    string               `json:"deployJobId" gorm:"size:64"`
+	Jobs           []ReleasePipelineJob `json:"jobs"`
+	Status         string               `json:"status" gorm:"size:32;index;not null"`
+	ErrorMessage   string               `json:"errorMessage" gorm:"size:512"`
+	SortOrder      int                  `json:"sortOrder" gorm:"index;not null"`
+	CreatedAt      time.Time            `json:"createdAt"`
+	UpdatedAt      time.Time            `json:"updatedAt"`
+}
+
+type ReleasePipelineJob struct {
+	ID               uint      `json:"id" gorm:"primaryKey"`
+	ReleaseProjectID uint      `json:"releaseProjectId" gorm:"index;not null"`
+	GitLabJobID      string    `json:"gitlabJobId" gorm:"size:64;not null"`
+	Name             string    `json:"name" gorm:"size:128;not null"`
+	Stage            string    `json:"stage" gorm:"size:64;index;not null"`
+	Status           string    `json:"status" gorm:"size:32;index;not null"`
+	WebURL           string    `json:"webUrl" gorm:"size:255"`
+	Manual           bool      `json:"manual"`
+	AllowFailure     bool      `json:"allowFailure"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 type ReleaseEvent struct {

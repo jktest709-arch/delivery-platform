@@ -5,6 +5,7 @@ import type {
   BusinessLine,
   BusinessLinePayload,
   CreateReleasePayload,
+  PipelineJob,
   Project,
   ProjectKind,
   ProjectPayload,
@@ -29,9 +30,9 @@ const tabs = [
 const statusText: Record<string, string> = {
   pending: "待处理",
   tagged: "已打 Tag",
-  building: "打包中",
-  build_success: "打包完成",
-  build_failed: "打包失败",
+  building: "构建中",
+  build_success: "构建完成",
+  build_failed: "构建失败",
   deploying: "部署中",
   deploy_success: "部署成功",
   deploy_failed: "部署失败",
@@ -483,7 +484,7 @@ async function projectAction(row: ReleaseProject, action: "package" | "deploy") 
         ? await api.packageProject(currentRelease.value!.id, row.id)
         : await api.deployProject(currentRelease.value!.id, row.id);
     upsertRelease(updated);
-    message.value = `${row.project.name} 已触发${action === "package" ? "打包" : "部署"}`;
+    message.value = `${row.project.name} 已触发${action === "package" ? "构建" : "部署"}`;
   });
 }
 
@@ -610,8 +611,6 @@ function emptyProjectForm(): ProjectForm {
     gitlabUrl: "",
     gitlabProjectId: "",
     defaultBranch: "master",
-    packageJob: "build-prd",
-    deployJob: "deploy-prd",
     sortOrder: nextOrder,
     enabled: true,
   };
@@ -629,8 +628,6 @@ function projectToForm(project: Project): ProjectForm {
     gitlabUrl: project.gitlabUrl,
     gitlabProjectId: project.gitlabProjectId,
     defaultBranch: project.defaultBranch,
-    packageJob: project.packageJob,
-    deployJob: project.deployJob,
     sortOrder: project.sortOrder,
     enabled: project.enabled,
   };
@@ -659,8 +656,6 @@ function normalizeProjectForm(form: ProjectForm): ProjectForm {
     gitlabUrl: form.gitlabUrl.trim(),
     gitlabProjectId: form.gitlabProjectId.trim(),
     defaultBranch: form.defaultBranch.trim(),
-    packageJob: form.packageJob.trim(),
-    deployJob: form.deployJob.trim(),
     sortOrder: Number(form.sortOrder) || 0,
     enabled: Boolean(form.enabled),
   };
@@ -991,6 +986,10 @@ function packageStepState(row: ReleaseProject) {
   return "pending";
 }
 
+function pipelineStepState(row: ReleaseProject) {
+  return row.pipelineId ? "done" : tagStepState(row) === "done" ? "running" : "pending";
+}
+
 function deployStepState(row: ReleaseProject) {
   if (row.status === "deploy_failed") {
     return "failed";
@@ -1020,6 +1019,44 @@ function pipelineUrl(row: ReleaseProject, id: string) {
     return "";
   }
   return `${row.project.gitlabUrl.replace(/\/$/, "")}/-/pipelines/${encodeURIComponent(id)}`;
+}
+
+function jobUrl(row: ReleaseProject, job: PipelineJob) {
+  if (job.webUrl) {
+    return job.webUrl;
+  }
+  if (!job.gitlabJobId || !row.project.gitlabUrl) {
+    return "";
+  }
+  return `${row.project.gitlabUrl.replace(/\/$/, "")}/-/jobs/${encodeURIComponent(job.gitlabJobId)}`;
+}
+
+function actionJobs(row: ReleaseProject, action: "package" | "deploy") {
+  const jobs = Array.isArray(row.jobs) ? row.jobs : [];
+  return jobs.filter((job) => matchesActionJob(job, action));
+}
+
+function matchesActionJob(job: PipelineJob, action: "package" | "deploy") {
+  const value = `${job.stage} ${job.name}`.toLowerCase();
+  if (action === "deploy") {
+    return value.includes("deploy");
+  }
+  return value.includes("build") || value.includes("package");
+}
+
+function jobStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    manual: "待手动触发",
+    created: "已创建",
+    pending: "等待中",
+    preparing: "准备中",
+    running: "运行中",
+    success: "成功",
+    failed: "失败",
+    canceled: "已取消",
+    skipped: "已跳过",
+  };
+  return labels[status] ?? status;
 }
 
 function upsertRelease(updated: Release) {
@@ -1233,7 +1270,7 @@ function statusLabel(status: string) {
           <div class="pipeline-flow">
             <div class="section-head compact-head">
               <h2>Pipeline 流程</h2>
-              <small>GitLab Tags API -> Pipeline API(package) -> Pipeline API(deploy)</small>
+              <small>GitLab Tags API -> tag pipeline -> Jobs API -> play manual job</small>
             </div>
             <div class="pipeline-list">
               <article v-for="row in currentRelease.projects" :key="row.id" class="pipeline-row">
@@ -1247,21 +1284,33 @@ function statusLabel(status: string) {
                   <strong>创建 Tag</strong>
                   <code>{{ row.targetTag || "-" }}</code>
                 </div>
+                <div class="pipeline-step" :class="pipelineStepState(row)">
+                  <span>{{ pipelineStepLabel(pipelineStepState(row)) }}</span>
+                  <strong>Tag Pipeline</strong>
+                  <a v-if="row.pipelineId" :href="pipelineUrl(row, row.pipelineId)" target="_blank">
+                    #{{ row.pipelineId }}
+                  </a>
+                  <small v-else>等待 tag 触发</small>
+                </div>
                 <div class="pipeline-step" :class="packageStepState(row)">
                   <span>{{ pipelineStepLabel(packageStepState(row)) }}</span>
-                  <strong>打包 Pipeline</strong>
-                  <a v-if="row.buildJobId" :href="pipelineUrl(row, row.buildJobId)" target="_blank">
-                    #{{ row.buildJobId }}
-                  </a>
-                  <small v-else>JOB_NAME={{ row.project.packageJob }}</small>
+                  <strong>构建 Jobs</strong>
+                  <div v-if="actionJobs(row, 'package').length" class="job-list">
+                    <a v-for="job in actionJobs(row, 'package')" :key="job.id" :href="jobUrl(row, job)" target="_blank">
+                      {{ job.name }} · {{ jobStatusLabel(job.status) }}
+                    </a>
+                  </div>
+                  <small v-else>等待 Pipeline jobs</small>
                 </div>
                 <div class="pipeline-step" :class="deployStepState(row)">
                   <span>{{ pipelineStepLabel(deployStepState(row)) }}</span>
-                  <strong>部署 Pipeline</strong>
-                  <a v-if="row.deployJobId" :href="pipelineUrl(row, row.deployJobId)" target="_blank">
-                    #{{ row.deployJobId }}
-                  </a>
-                  <small v-else>JOB_NAME={{ row.project.deployJob }}</small>
+                  <strong>部署 Jobs</strong>
+                  <div v-if="actionJobs(row, 'deploy').length" class="job-list">
+                    <a v-for="job in actionJobs(row, 'deploy')" :key="job.id" :href="jobUrl(row, job)" target="_blank">
+                      {{ job.name }} · {{ jobStatusLabel(job.status) }}
+                    </a>
+                  </div>
+                  <small v-else>等待 deploy job</small>
                 </div>
               </article>
             </div>
@@ -1269,9 +1318,9 @@ function statusLabel(status: string) {
 
           <div class="actions split">
             <button :disabled="!canOperate || loading" @click="releaseAction('tag')">统一打 Tag</button>
-            <button :disabled="!canOperate || loading" @click="releaseAction('package', 'all')">全量打包</button>
-            <button :disabled="!canOperate || loading" @click="releaseAction('package', 'backend')">后端打包</button>
-            <button :disabled="!canOperate || loading" @click="releaseAction('package', 'frontend')">前端打包</button>
+            <button :disabled="!canOperate || loading" @click="releaseAction('package', 'all')">全量构建</button>
+            <button :disabled="!canOperate || loading" @click="releaseAction('package', 'backend')">后端构建</button>
+            <button :disabled="!canOperate || loading" @click="releaseAction('package', 'frontend')">前端构建</button>
             <button class="primary" :disabled="!canOperate || loading" @click="releaseAction('deploy', 'all')">
               生产部署
             </button>
@@ -1304,7 +1353,7 @@ function statusLabel(status: string) {
                     <span class="status" :class="row.status">{{ statusLabel(row.status) }}</span>
                   </td>
                   <td class="inline-actions">
-                    <button :disabled="!canOperate || loading" @click="projectAction(row, 'package')">打包</button>
+                    <button :disabled="!canOperate || loading" @click="projectAction(row, 'package')">构建</button>
                     <button :disabled="!canOperate || loading" @click="projectAction(row, 'deploy')">部署</button>
                   </td>
                 </tr>
@@ -1371,14 +1420,6 @@ function statusLabel(status: string) {
               <input v-model="newProjectForm.defaultBranch" required />
             </label>
             <label>
-              <span>打包 Pipeline 变量</span>
-              <input v-model="newProjectForm.packageJob" required />
-            </label>
-            <label>
-              <span>部署 Pipeline 变量</span>
-              <input v-model="newProjectForm.deployJob" required />
-            </label>
-            <label>
               <span>负责人</span>
               <input v-model="newProjectForm.owner" required />
             </label>
@@ -1405,7 +1446,7 @@ function statusLabel(status: string) {
                 <th>项目</th>
                 <th>类型 / 业务线</th>
                 <th>GitLab 仓库</th>
-                <th>默认分支 / Pipeline 变量</th>
+                <th>默认分支</th>
                 <th>负责人</th>
                 <th>状态</th>
                 <th>操作</th>
@@ -1472,12 +1513,9 @@ function statusLabel(status: string) {
                 <td class="stack-cell">
                   <template v-if="editingProjectCode === project.code">
                     <input v-model="projectDraft(project).defaultBranch" />
-                    <input v-model="projectDraft(project).packageJob" />
-                    <input v-model="projectDraft(project).deployJob" />
                   </template>
                   <template v-else>
                     <span>{{ project.defaultBranch }}</span>
-                    <small>JOB_NAME={{ project.packageJob }} / {{ project.deployJob }}</small>
                   </template>
                 </td>
                 <td>

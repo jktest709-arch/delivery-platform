@@ -1,6 +1,6 @@
 # 统一交付平台
 
-基于 GitLab CI 的私有化交付平台。当前版本已从前端状态原型重构为前后端工程：Go 后端负责权限、配置、上线单、发布历史和 GitLab API 编排；Vue 管理台负责上线申请、统一打 tag、一键打包、单项目重试和配置管理。
+基于 GitLab CI 的私有化交付平台。当前版本已从前端状态原型重构为前后端工程：Go 后端负责权限、配置、上线单、发布历史和 GitLab API 编排；Vue 管理台负责上线申请、统一打 tag、一键构建、单项目重试和配置管理。
 
 ## 技术栈
 
@@ -61,7 +61,7 @@ npm run test:e2e
 - `/api/projects` 契约：`dependencies` 必须返回数组，不能返回 `null`。
 - 前端登录后渲染：接口返回 `dependencies: null` 时不能白屏。
 - E2E 冒烟：`admin/admin123` 登录后切换所有主页面，浏览器不能出现运行时错误。
-- 用户权限与 Pipeline 流程：覆盖管理员用户管理入口，以及执行台内 Tag、打包、部署流水线展示。
+- 用户权限与 Pipeline 流程：覆盖管理员用户管理入口，以及执行台内 Tag、Pipeline、构建/部署 jobs 展示。
 
 默认账号：
 
@@ -111,7 +111,7 @@ docker compose up -d
 
 ## GitLab 真实模式
 
-默认 `GITLAB_DRY_RUN=true`，点击统一打 tag、打包、部署时只会写入平台数据库，不会调用真实 GitLab。
+默认 `GITLAB_DRY_RUN=true`，点击统一打 tag、构建、部署时只会写入平台数据库，不会调用真实 GitLab。
 
 切换真实模式：
 
@@ -121,28 +121,28 @@ GITLAB_BASE_URL=https://gitlab.your-company.com
 GITLAB_TOKEN=<Personal Access Token 或 Project Access Token>
 ```
 
-Token 至少需要具备创建 tag、触发 pipeline 的权限。项目配置里的 `GitLab Project ID` 支持数字 ID，也支持 `group/project` 路径。
+Token 至少需要具备创建 tag、读取 pipeline/jobs、触发 manual job 的权限。项目配置里的 `GitLab Project ID` 支持数字 ID，也支持 `group/project` 路径。
 
 ## 当前功能
 
 - 上线单申请：开发先指定本次发布业务线，再选择该业务线下需要上线的项目，并为项目指定分支、tag 或 commit。
-- 项目配置：新增、编辑、删除项目，维护 GitLab 地址、Project ID、默认分支、关联多条业务线、打包/部署 Pipeline 变量。
+- 项目配置：新增、编辑、删除项目，维护 GitLab 地址、Project ID、默认分支、关联多条业务线。
 - 业务线配置：新增、编辑、删除业务线，维护平台、tag 前缀和 tag 模板；删除已被项目使用的业务线时，需要选择替代业务线并迁移关联项目关系。
 - 依赖顺序配置：管理员预先配置项目顺序和依赖关系，支持新增、编辑、按依赖关系整行删除和清空依赖。
 - 统一打 tag：对上线单内项目按本次发布业务线生成生产 tag。
-- Pipeline 流程：执行台按项目展示创建 Tag、打包 Pipeline、部署 Pipeline 三段状态；真实模式下创建 Tag 调用 GitLab Tags API，打包/部署调用 GitLab Pipeline API，并把项目配置里的打包/部署值作为 `JOB_NAME` 变量传给 `.gitlab-ci.yml` 规则。
-- 一键打包：支持全量、后端、前端三种队列。
-- 单项目操作：支持单项目打包和部署，用于失败重试或补发。
+- Pipeline 流程：执行台按项目展示创建 Tag、Tag 触发的 Pipeline、GitLab jobs 状态；真实模式下创建 Tag 调用 GitLab Tags API，随后按 tag 查询 Pipeline，再通过 Jobs API 获取 build/deploy jobs。
+- 一键构建：支持全量、后端、前端三种队列，触发对应 pipeline 内 manual 构建 job。
+- 单项目操作：支持单项目构建和部署，用于失败重试或补发。
 - 发布历史：持久化记录批次、项目、tag、pipeline、操作时间线，并支持清理不再需要的历史发布任务。
 - 用户权限：管理员维护用户、角色、状态和重置密码；内置开发、发布经理、管理员三类角色。
 
 Tag 模板支持 `{prefix}`、`{timestamp}`、`{datetime}`、`{date}`、`{releaseNo}`，其中时间戳按秒生成，格式为 `yyyyMMddHHmmss`。旧模板里的 `{date}` 会兼容为秒级时间戳。
 
-项目配置里的“打包/部署 Pipeline 变量”不是 GitLab 已创建 job 的查询结果。当前实现是先通过 GitLab Pipeline API 触发整条 pipeline，再由 `.gitlab-ci.yml` 根据 `ACTION` 和 `JOB_NAME` 等变量决定执行哪些 job。GitLab job 列表需要在 pipeline 创建后再通过 Jobs API 查询，后续可在状态轮询中补充展示每个 job 的真实状态和日志入口。
+当前 GitLab CI 流程以 tag 触发 pipeline 为准：平台创建 tag 后等待 GitLab 自动生成 pipeline，再查询该 pipeline 的 jobs。构建/部署按钮不会重新触发 pipeline，也不会传 `JOB_NAME`；它会对匹配 build/package 或 deploy stage/name 的 manual job 调用 GitLab play job API。
 
 ## 后续建议
 
 - 接入完整 go-admin 菜单、Casbin 策略和操作日志表。
-- 增加审批流节点：提交、审批、打包、部署、关闭。
+- 增加审批流节点：提交、审批、构建、部署、关闭。
 - 增加 GitLab pipeline 状态轮询任务和失败日志抓取。
 - 增加 LDAP/OIDC 登录，用企业账号替换内置账号。

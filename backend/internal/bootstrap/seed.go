@@ -88,13 +88,13 @@ func seedProjects(db *gorm.DB) error {
 	}
 
 	projects := []model.Project{
-		project("base-auth", "统一认证中心", model.ProjectKindBackend, "平台组", lineID["ops"], "https://gitlab.corp/delivery/base-auth", "delivery/base-auth", "master", "build-auth-prd", "deploy-auth-prd", 10),
-		project("order-core", "订单核心服务", model.ProjectKindBackend, "交易组", lineID["aa"], "https://gitlab.corp/delivery/order-core", "delivery/order-core", "master", "build-order-prd", "deploy-order-prd", 20),
-		project("pay-gateway", "支付网关", model.ProjectKindBackend, "支付组", lineID["aa"], "https://gitlab.corp/delivery/pay-gateway", "delivery/pay-gateway", "master", "build-pay-prd", "deploy-pay-prd", 30),
-		project("dispatch-engine", "履约调度引擎", model.ProjectKindBackend, "履约组", lineID["bb"], "https://gitlab.corp/delivery/dispatch-engine", "delivery/dispatch-engine", "master", "build-dispatch-prd", "deploy-dispatch-prd", 40),
-		project("merchant-portal", "商家工作台", model.ProjectKindFrontend, "商家组", lineID["bb"], "https://gitlab.corp/delivery/merchant-portal", "delivery/merchant-portal", "main", "build-portal-prd", "deploy-portal-prd", 50),
-		project("mobile-bff", "移动端 BFF", model.ProjectKindBackend, "无线组", lineID["aa"], "https://gitlab.corp/delivery/mobile-bff", "delivery/mobile-bff", "master", "build-mobile-prd", "deploy-mobile-prd", 60),
-		project("reporting", "运营报表中心", model.ProjectKindFrontend, "数据组", lineID["ops"], "https://gitlab.corp/delivery/reporting", "delivery/reporting", "main", "build-report-prd", "deploy-report-prd", 70),
+		project("base-auth", "统一认证中心", model.ProjectKindBackend, "平台组", lineID["ops"], "https://gitlab.corp/delivery/base-auth", "delivery/base-auth", "master", 10),
+		project("order-core", "订单核心服务", model.ProjectKindBackend, "交易组", lineID["aa"], "https://gitlab.corp/delivery/order-core", "delivery/order-core", "master", 20),
+		project("pay-gateway", "支付网关", model.ProjectKindBackend, "支付组", lineID["aa"], "https://gitlab.corp/delivery/pay-gateway", "delivery/pay-gateway", "master", 30),
+		project("dispatch-engine", "履约调度引擎", model.ProjectKindBackend, "履约组", lineID["bb"], "https://gitlab.corp/delivery/dispatch-engine", "delivery/dispatch-engine", "master", 40),
+		project("merchant-portal", "商家工作台", model.ProjectKindFrontend, "商家组", lineID["bb"], "https://gitlab.corp/delivery/merchant-portal", "delivery/merchant-portal", "main", 50),
+		project("mobile-bff", "移动端 BFF", model.ProjectKindBackend, "无线组", lineID["aa"], "https://gitlab.corp/delivery/mobile-bff", "delivery/mobile-bff", "master", 60),
+		project("reporting", "运营报表中心", model.ProjectKindFrontend, "数据组", lineID["ops"], "https://gitlab.corp/delivery/reporting", "delivery/reporting", "main", 70),
 	}
 	for _, item := range projects {
 		if err := db.Where("code = ?", item.Code).FirstOrCreate(&item).Error; err != nil {
@@ -104,7 +104,7 @@ func seedProjects(db *gorm.DB) error {
 	return nil
 }
 
-func project(code, name, kind, owner string, lineID uint, repo, projectID, branch, packageJob, deployJob string, order int) model.Project {
+func project(code, name, kind, owner string, lineID uint, repo, projectID, branch string, order int) model.Project {
 	return model.Project{
 		Code:            code,
 		Name:            name,
@@ -114,8 +114,6 @@ func project(code, name, kind, owner string, lineID uint, repo, projectID, branc
 		GitLabURL:       repo,
 		GitLabProjectID: projectID,
 		DefaultBranch:   branch,
-		PackageJob:      packageJob,
-		DeployJob:       deployJob,
 		SortOrder:       order,
 		Enabled:         true,
 	}

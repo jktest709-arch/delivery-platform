@@ -3,6 +3,7 @@ package release
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,7 +14,9 @@ import (
 
 type GitLabClient interface {
 	CreateTag(ctx context.Context, projectID, tagName, ref string) error
-	TriggerPipeline(ctx context.Context, projectID, ref string, variables map[string]string) (gitlab.PipelineResponse, error)
+	FindPipelineByRef(ctx context.Context, projectID, ref string) (gitlab.PipelineResponse, error)
+	ListPipelineJobs(ctx context.Context, projectID, pipelineID string) ([]gitlab.JobResponse, error)
+	PlayJob(ctx context.Context, projectID, jobID string) (gitlab.JobResponse, error)
 }
 
 type Service struct {
@@ -154,16 +157,23 @@ func (s *Service) CreateTags(ctx context.Context, releaseID uint, operator model
 				})
 				return err
 			}
-			if err := tx.Model(&model.ReleaseProject{}).Where("id = ?", item.ID).Updates(map[string]interface{}{
-				"status": model.ProjectStatusTagged,
-			}).Error; err != nil {
+			pipeline, err := s.findPipelineAfterTag(ctx, item)
+			if err != nil {
+				tx.Model(&model.ReleaseProject{}).Where("id = ?", item.ID).Updates(map[string]interface{}{
+					"status":        model.ProjectStatusBuildFailed,
+					"error_message": err.Error(),
+				})
+				return err
+			}
+			if err := s.syncPipelineJobs(ctx, tx, item, pipeline); err != nil {
 				return err
 			}
 		}
-		if err := tx.Model(&model.Release{}).Where("id = ?", release.ID).Update("status", model.ReleaseStatusTagged).Error; err != nil {
+		if err := s.refreshReleaseStatus(tx, release.ID); err != nil {
 			return err
 		}
-		return tx.Create(event(release.ID, operator.ID, "create_tags", "已按业务线配置统一创建生产 tag。")).Error
+		item := event(release.ID, operator.ID, "create_tags", "已按业务线配置创建 tag，并同步 GitLab pipeline/jobs。")
+		return tx.Create(&item).Error
 	})
 	if err != nil {
 		return release, err
@@ -194,6 +204,7 @@ func (s *Service) Get(ctx context.Context, id uint) (model.Release, error) {
 		Preload("BusinessLine").
 		Preload("Approver").
 		Preload("Projects.BusinessLine").
+		Preload("Projects.Jobs").
 		Preload("Projects.Project.BusinessLine").
 		Preload("Projects.Project.BusinessLines").
 		Preload("Events.Operator").
@@ -212,6 +223,7 @@ func (s *Service) List(ctx context.Context) ([]model.Release, error) {
 		Preload("BusinessLine").
 		Preload("Approver").
 		Preload("Projects.BusinessLine").
+		Preload("Projects.Jobs").
 		Preload("Projects.Project.BusinessLine").
 		Preload("Projects.Project.BusinessLines").
 		Preload("Events.Operator").
@@ -235,6 +247,15 @@ func (s *Service) Delete(ctx context.Context, id uint) error {
 		if err := tx.Where("release_id = ?", id).Delete(&model.ReleaseEvent{}).Error; err != nil {
 			return err
 		}
+		var releaseProjectIDs []uint
+		if err := tx.Model(&model.ReleaseProject{}).Where("release_id = ?", id).Pluck("id", &releaseProjectIDs).Error; err != nil {
+			return err
+		}
+		if len(releaseProjectIDs) > 0 {
+			if err := tx.Where("release_project_id IN ?", releaseProjectIDs).Delete(&model.ReleasePipelineJob{}).Error; err != nil {
+				return err
+			}
+		}
 		if err := tx.Where("release_id = ?", id).Delete(&model.ReleaseProject{}).Error; err != nil {
 			return err
 		}
@@ -250,7 +271,7 @@ func (s *Service) runPipelines(ctx context.Context, releaseID uint, target strin
 
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, item := range filterByTarget(release.Projects, target) {
-			if err := s.trigger(ctx, tx, item, action); err != nil {
+			if err := s.playJobs(ctx, tx, item, action); err != nil {
 				return err
 			}
 		}
@@ -264,7 +285,8 @@ func (s *Service) runPipelines(ctx context.Context, releaseID uint, target strin
 		if target == model.ProjectKindFrontend {
 			label = "前端"
 		}
-		return tx.Create(event(release.ID, operator.ID, action+"_"+target, fmt.Sprintf("已触发%s%s流水线。", label, actionLabel(action)))).Error
+		item := event(release.ID, operator.ID, action+"_"+target, fmt.Sprintf("已触发%s%s job。", label, actionLabel(action)))
+		return tx.Create(&item).Error
 	})
 	if err != nil {
 		return release, err
@@ -290,13 +312,14 @@ func (s *Service) runOne(ctx context.Context, releaseID uint, releaseProjectID u
 	}
 
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := s.trigger(ctx, tx, *target, action); err != nil {
+		if err := s.playJobs(ctx, tx, *target, action); err != nil {
 			return err
 		}
 		if err := s.refreshReleaseStatus(tx, release.ID); err != nil {
 			return err
 		}
-		return tx.Create(event(release.ID, operator.ID, action+"_single", fmt.Sprintf("已单独触发 %s 的%s流水线。", target.Project.Name, actionLabel(action)))).Error
+		item := event(release.ID, operator.ID, action+"_single", fmt.Sprintf("已单独触发 %s 的%s job。", target.Project.Name, actionLabel(action)))
+		return tx.Create(&item).Error
 	})
 	if err != nil {
 		return release, err
@@ -304,15 +327,11 @@ func (s *Service) runOne(ctx context.Context, releaseID uint, releaseProjectID u
 	return s.Get(ctx, releaseID)
 }
 
-func (s *Service) trigger(ctx context.Context, tx *gorm.DB, item model.ReleaseProject, action string) error {
-	jobName := item.Project.PackageJob
+func (s *Service) playJobs(ctx context.Context, tx *gorm.DB, item model.ReleaseProject, action string) error {
 	nextStatus := model.ProjectStatusBuilding
-	successStatus := model.ProjectStatusBuildSuccess
 	releaseStatus := model.ReleaseStatusBuilding
 	if action == "deploy" {
-		jobName = item.Project.DeployJob
 		nextStatus = model.ProjectStatusDeploying
-		successStatus = model.ProjectStatusDeploySuccess
 		releaseStatus = model.ReleaseStatusDeploying
 	}
 
@@ -323,34 +342,213 @@ func (s *Service) trigger(ctx context.Context, tx *gorm.DB, item model.ReleasePr
 		return err
 	}
 
-	pipeline, err := s.gitlab.TriggerPipeline(ctx, item.Project.GitLabProjectID, item.TargetTag, map[string]string{
-		"RELEASE_ID": item.TargetTag,
-		"JOB_NAME":   jobName,
-		"ACTION":     action,
-	})
-	if err != nil {
-		failedStatus := model.ProjectStatusBuildFailed
-		if action == "deploy" {
-			failedStatus = model.ProjectStatusDeployFailed
+	if item.PipelineID == "" {
+		pipeline, err := s.findPipelineAfterTag(ctx, item)
+		if err != nil {
+			return s.markActionFailed(tx, item.ID, action, err)
 		}
-		tx.Model(&model.ReleaseProject{}).Where("id = ?", item.ID).Updates(map[string]interface{}{
-			"status":        failedStatus,
-			"error_message": err.Error(),
-		})
-		return err
+		if err := s.syncPipelineJobs(ctx, tx, item, pipeline); err != nil {
+			return err
+		}
+		item.PipelineID = pipeline.ID
 	}
 
+	jobs, err := s.gitlab.ListPipelineJobs(ctx, item.Project.GitLabProjectID, item.PipelineID)
+	if err != nil {
+		return s.markActionFailed(tx, item.ID, action, err)
+	}
+	matchingJobs := filterActionJobs(jobs, action)
+	if len(matchingJobs) == 0 {
+		return s.markActionFailed(tx, item.ID, action, fmt.Errorf("未找到可匹配的%s job", actionLabel(action)))
+	}
+	playableJobs := filterPlayableJobs(matchingJobs)
+	if len(playableJobs) == 0 {
+		if err := s.replacePipelineJobs(tx, item.ID, jobs); err != nil {
+			return err
+		}
+		status := projectStatusFromJobs(jobs)
+		if status == model.ProjectStatusBuildSuccess || status == model.ProjectStatusDeploySuccess ||
+			status == model.ProjectStatusBuilding || status == model.ProjectStatusDeploying {
+			return s.updateReleaseProjectFromJobs(tx, item.ID, item.PipelineID, jobs, "")
+		}
+		return s.markActionFailed(tx, item.ID, action, fmt.Errorf("未找到 manual 状态的%s job", actionLabel(action)))
+	}
+
+	for _, job := range playableJobs {
+		if _, err := s.gitlab.PlayJob(ctx, item.Project.GitLabProjectID, job.ID); err != nil {
+			return s.markActionFailed(tx, item.ID, action, err)
+		}
+	}
+
+	refreshedJobs, err := s.gitlab.ListPipelineJobs(ctx, item.Project.GitLabProjectID, item.PipelineID)
+	if err != nil {
+		return s.markActionFailed(tx, item.ID, action, err)
+	}
+	return s.updateReleaseProjectFromJobs(tx, item.ID, item.PipelineID, refreshedJobs, "")
+}
+
+func (s *Service) findPipelineAfterTag(ctx context.Context, item model.ReleaseProject) (gitlab.PipelineResponse, error) {
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		pipeline, err := s.gitlab.FindPipelineByRef(ctx, item.Project.GitLabProjectID, item.TargetTag)
+		if err == nil {
+			return pipeline, nil
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return gitlab.PipelineResponse{}, ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 500 * time.Millisecond):
+		}
+	}
+	return gitlab.PipelineResponse{}, lastErr
+}
+
+func (s *Service) syncPipelineJobs(ctx context.Context, tx *gorm.DB, item model.ReleaseProject, pipeline gitlab.PipelineResponse) error {
+	jobs, err := s.gitlab.ListPipelineJobs(ctx, item.Project.GitLabProjectID, pipeline.ID)
+	if err != nil {
+		return err
+	}
+	return s.updateReleaseProjectFromJobs(tx, item.ID, pipeline.ID, jobs, "")
+}
+
+func (s *Service) updateReleaseProjectFromJobs(tx *gorm.DB, releaseProjectID uint, pipelineID string, jobs []gitlab.JobResponse, errorMessage string) error {
+	if err := s.replacePipelineJobs(tx, releaseProjectID, jobs); err != nil {
+		return err
+	}
 	updates := map[string]interface{}{
-		"pipeline_id":   pipeline.ID,
-		"status":        successStatus,
-		"error_message": "",
+		"pipeline_id":   pipelineID,
+		"status":        projectStatusFromJobs(jobs),
+		"error_message": errorMessage,
 	}
-	if action == "package" {
-		updates["build_job_id"] = pipeline.ID
-	} else {
-		updates["deploy_job_id"] = pipeline.ID
+	if buildJobID := firstActionJobID(jobs, "package"); buildJobID != "" {
+		updates["build_job_id"] = buildJobID
 	}
-	return tx.Model(&model.ReleaseProject{}).Where("id = ?", item.ID).Updates(updates).Error
+	if deployJobID := firstActionJobID(jobs, "deploy"); deployJobID != "" {
+		updates["deploy_job_id"] = deployJobID
+	}
+	return tx.Model(&model.ReleaseProject{}).Where("id = ?", releaseProjectID).Updates(updates).Error
+}
+
+func (s *Service) replacePipelineJobs(tx *gorm.DB, releaseProjectID uint, jobs []gitlab.JobResponse) error {
+	if err := tx.Where("release_project_id = ?", releaseProjectID).Delete(&model.ReleasePipelineJob{}).Error; err != nil {
+		return err
+	}
+	for _, job := range jobs {
+		item := model.ReleasePipelineJob{
+			ReleaseProjectID: releaseProjectID,
+			GitLabJobID:      job.ID,
+			Name:             job.Name,
+			Stage:            job.Stage,
+			Status:           job.Status,
+			WebURL:           job.WebURL,
+			Manual:           job.Manual || job.Status == "manual",
+			AllowFailure:     job.AllowFailure,
+		}
+		if err := tx.Create(&item).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Service) markActionFailed(tx *gorm.DB, releaseProjectID uint, action string, err error) error {
+	failedStatus := model.ProjectStatusBuildFailed
+	if action == "deploy" {
+		failedStatus = model.ProjectStatusDeployFailed
+	}
+	tx.Model(&model.ReleaseProject{}).Where("id = ?", releaseProjectID).Updates(map[string]interface{}{
+		"status":        failedStatus,
+		"error_message": err.Error(),
+	})
+	return err
+}
+
+func filterActionJobs(jobs []gitlab.JobResponse, action string) []gitlab.JobResponse {
+	result := []gitlab.JobResponse{}
+	for _, job := range jobs {
+		if matchesActionJob(job.Stage, job.Name, action) {
+			result = append(result, job)
+		}
+	}
+	return result
+}
+
+func filterPlayableJobs(jobs []gitlab.JobResponse) []gitlab.JobResponse {
+	result := []gitlab.JobResponse{}
+	for _, job := range jobs {
+		if job.Status == "manual" {
+			result = append(result, job)
+		}
+	}
+	return result
+}
+
+func firstActionJobID(jobs []gitlab.JobResponse, action string) string {
+	for _, job := range jobs {
+		if matchesActionJob(job.Stage, job.Name, action) {
+			return job.ID
+		}
+	}
+	return ""
+}
+
+func projectStatusFromJobs(jobs []gitlab.JobResponse) string {
+	buildJobs := filterActionJobs(jobs, "package")
+	deployJobs := filterActionJobs(jobs, "deploy")
+	switch {
+	case anyJobStatus(deployJobs, "failed", "canceled"):
+		return model.ProjectStatusDeployFailed
+	case anyJobStatus(buildJobs, "failed", "canceled"):
+		return model.ProjectStatusBuildFailed
+	case anyJobRunning(deployJobs):
+		return model.ProjectStatusDeploying
+	case len(deployJobs) > 0 && allJobsSuccessful(deployJobs):
+		return model.ProjectStatusDeploySuccess
+	case anyJobRunning(buildJobs):
+		return model.ProjectStatusBuilding
+	case len(buildJobs) > 0 && allJobsSuccessful(buildJobs):
+		return model.ProjectStatusBuildSuccess
+	default:
+		return model.ProjectStatusTagged
+	}
+}
+
+func matchesActionJob(stage string, name string, action string) bool {
+	value := strings.ToLower(strings.TrimSpace(stage + " " + name))
+	if action == "deploy" {
+		return strings.Contains(value, "deploy")
+	}
+	return strings.Contains(value, "build") || strings.Contains(value, "package")
+}
+
+func anyJobStatus(jobs []gitlab.JobResponse, statuses ...string) bool {
+	allowed := map[string]bool{}
+	for _, status := range statuses {
+		allowed[status] = true
+	}
+	for _, job := range jobs {
+		if allowed[job.Status] {
+			return true
+		}
+	}
+	return false
+}
+
+func anyJobRunning(jobs []gitlab.JobResponse) bool {
+	return anyJobStatus(jobs, "created", "pending", "preparing", "running", "scheduled", "waiting_for_resource")
+}
+
+func allJobsSuccessful(jobs []gitlab.JobResponse) bool {
+	if len(jobs) == 0 {
+		return false
+	}
+	for _, job := range jobs {
+		if job.Status != "success" {
+			return false
+		}
+	}
+	return true
 }
 
 func selectProjectBusinessLine(project model.Project, requestedCode string) (model.BusinessLine, error) {
@@ -493,7 +691,7 @@ func actionLabel(action string) string {
 	if action == "deploy" {
 		return "部署"
 	}
-	return "打包"
+	return "构建"
 }
 
 func event(releaseID uint, operatorID uint, action, message string) model.ReleaseEvent {
@@ -507,6 +705,14 @@ func event(releaseID uint, operatorID uint, action, message string) model.Releas
 
 func sortRelease(release *model.Release) {
 	for i := range release.Projects {
+		sort.Slice(release.Projects[i].Jobs, func(j, k int) bool {
+			left := release.Projects[i].Jobs[j]
+			right := release.Projects[i].Jobs[k]
+			if left.Stage == right.Stage {
+				return left.Name < right.Name
+			}
+			return left.Stage < right.Stage
+		})
 		for j := i + 1; j < len(release.Projects); j++ {
 			if release.Projects[j].SortOrder < release.Projects[i].SortOrder {
 				release.Projects[i], release.Projects[j] = release.Projects[j], release.Projects[i]
