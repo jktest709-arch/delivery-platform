@@ -125,18 +125,20 @@ Token 至少需要具备创建 tag、触发 pipeline 的权限。项目配置里
 
 ## 当前功能
 
-- 上线单申请：开发选择项目，并为每个项目指定分支、tag 或 commit。
-- 项目配置：新增、编辑、删除项目，维护 GitLab 地址、Project ID、默认分支、打包 Job、部署 Job。
-- 业务线配置：新增、编辑、删除业务线，维护平台、tag 前缀和 tag 模板；删除已被项目使用的业务线时，需要选择替代业务线并迁移关联项目。
+- 上线单申请：开发选择项目，并为每个项目指定本次业务线、分支、tag 或 commit。
+- 项目配置：新增、编辑、删除项目，维护 GitLab 地址、Project ID、默认分支、关联多条业务线、打包/部署 Pipeline 变量。
+- 业务线配置：新增、编辑、删除业务线，维护平台、tag 前缀和 tag 模板；删除已被项目使用的业务线时，需要选择替代业务线并迁移关联项目关系。
 - 依赖顺序配置：管理员预先配置项目顺序和依赖关系，支持新增、编辑、按依赖关系整行删除和清空依赖。
 - 统一打 tag：对上线单内项目按业务线生成生产 tag。
-- Pipeline 流程：执行台按项目展示创建 Tag、打包 Pipeline、部署 Pipeline 三段状态；真实模式下创建 Tag 调用 GitLab Tags API，打包/部署调用 GitLab Pipeline API。
+- Pipeline 流程：执行台按项目展示创建 Tag、打包 Pipeline、部署 Pipeline 三段状态；真实模式下创建 Tag 调用 GitLab Tags API，打包/部署调用 GitLab Pipeline API，并把项目配置里的打包/部署值作为 `JOB_NAME` 变量传给 `.gitlab-ci.yml` 规则。
 - 一键打包：支持全量、后端、前端三种队列。
 - 单项目操作：支持单项目打包和部署，用于失败重试或补发。
 - 发布历史：持久化记录批次、项目、tag、pipeline、操作时间线，并支持清理不再需要的历史发布任务。
 - 用户权限：管理员维护用户、角色、状态和重置密码；内置开发、发布经理、管理员三类角色。
 
 Tag 模板支持 `{prefix}`、`{timestamp}`、`{datetime}`、`{date}`、`{releaseNo}`，其中时间戳按秒生成，格式为 `yyyyMMddHHmmss`。旧模板里的 `{date}` 会兼容为秒级时间戳。
+
+项目配置里的“打包/部署 Pipeline 变量”不是 GitLab 已创建 job 的查询结果。当前实现是先通过 GitLab Pipeline API 触发整条 pipeline，再由 `.gitlab-ci.yml` 根据 `ACTION` 和 `JOB_NAME` 等变量决定执行哪些 job。GitLab job 列表需要在 pipeline 创建后再通过 Jobs API 查询，后续可在状态轮询中补充展示每个 job 的真实状态和日志入口。
 
 ## 后续建议
 

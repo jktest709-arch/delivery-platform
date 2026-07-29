@@ -28,9 +28,10 @@ type CreateRequest struct {
 }
 
 type CreateProjectRequest struct {
-	ProjectCode string `json:"projectCode"`
-	SourceType  string `json:"sourceType"`
-	SourceRef   string `json:"sourceRef"`
+	ProjectCode      string `json:"projectCode"`
+	BusinessLineCode string `json:"businessLineCode"`
+	SourceType       string `json:"sourceType"`
+	SourceRef        string `json:"sourceRef"`
 }
 
 func NewService(db *gorm.DB, client GitLabClient) *Service {
@@ -55,6 +56,7 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 	var projects []model.Project
 	if err := s.db.WithContext(ctx).
 		Preload("BusinessLine").
+		Preload("BusinessLines").
 		Where("code IN ? AND enabled = ?", projectCodes, true).
 		Order("sort_order asc").
 		Find(&projects).Error; err != nil {
@@ -88,15 +90,20 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 
 		for _, project := range projects {
 			source := sourceByCode[project.Code]
-			targetTag := renderTagAt(project.BusinessLine, releaseNo, tagTime)
+			businessLine, err := selectProjectBusinessLine(project, source.BusinessLineCode)
+			if err != nil {
+				return err
+			}
+			targetTag := renderTagAt(businessLine, releaseNo, tagTime)
 			releaseProject := model.ReleaseProject{
-				ReleaseID:  created.ID,
-				ProjectID:  project.ID,
-				SourceType: source.SourceType,
-				SourceRef:  source.SourceRef,
-				TargetTag:  targetTag,
-				Status:     model.ProjectStatusPending,
-				SortOrder:  project.SortOrder,
+				ReleaseID:      created.ID,
+				ProjectID:      project.ID,
+				BusinessLineID: businessLine.ID,
+				SourceType:     source.SourceType,
+				SourceRef:      source.SourceRef,
+				TargetTag:      targetTag,
+				Status:         model.ProjectStatusPending,
+				SortOrder:      project.SortOrder,
 			}
 			if err := tx.Create(&releaseProject).Error; err != nil {
 				return err
@@ -168,7 +175,9 @@ func (s *Service) Get(ctx context.Context, id uint) (model.Release, error) {
 	err := s.db.WithContext(ctx).
 		Preload("Applicant").
 		Preload("Approver").
+		Preload("Projects.BusinessLine").
 		Preload("Projects.Project.BusinessLine").
+		Preload("Projects.Project.BusinessLines").
 		Preload("Events.Operator").
 		First(&release, id).Error
 	if err != nil {
@@ -183,7 +192,9 @@ func (s *Service) List(ctx context.Context) ([]model.Release, error) {
 	err := s.db.WithContext(ctx).
 		Preload("Applicant").
 		Preload("Approver").
+		Preload("Projects.BusinessLine").
 		Preload("Projects.Project.BusinessLine").
+		Preload("Projects.Project.BusinessLines").
 		Preload("Events.Operator").
 		Order("created_at desc").
 		Find(&releases).Error
@@ -321,6 +332,44 @@ func (s *Service) trigger(ctx context.Context, tx *gorm.DB, item model.ReleasePr
 		updates["deploy_job_id"] = pipeline.ID
 	}
 	return tx.Model(&model.ReleaseProject{}).Where("id = ?", item.ID).Updates(updates).Error
+}
+
+func selectProjectBusinessLine(project model.Project, requestedCode string) (model.BusinessLine, error) {
+	lines := projectBusinessLines(project)
+	if len(lines) == 0 {
+		return model.BusinessLine{}, fmt.Errorf("project %s has no business line configured", project.Code)
+	}
+
+	code := strings.TrimSpace(requestedCode)
+	if code == "" {
+		code = project.BusinessLine.Code
+	}
+	if code == "" {
+		code = lines[0].Code
+	}
+	for _, line := range lines {
+		if line.Code == code {
+			return line, nil
+		}
+	}
+	return model.BusinessLine{}, fmt.Errorf("project %s is not associated with business line %s", project.Code, code)
+}
+
+func projectBusinessLines(project model.Project) []model.BusinessLine {
+	lines := []model.BusinessLine{}
+	seen := map[string]bool{}
+	add := func(line model.BusinessLine) {
+		if line.ID == 0 || strings.TrimSpace(line.Code) == "" || seen[line.Code] {
+			return
+		}
+		seen[line.Code] = true
+		lines = append(lines, line)
+	}
+	add(project.BusinessLine)
+	for _, line := range project.BusinessLines {
+		add(line)
+	}
+	return lines
 }
 
 func (s *Service) nextBatchNo(ctx context.Context) (string, string, error) {

@@ -13,7 +13,7 @@ flowchart LR
 
 ## 后端模块
 
-- `internal/model`：用户、业务线、项目、依赖、上线单、上线项目、发布事件。
+- `internal/model`：用户、业务线、项目多业务线关联、依赖、上线单、上线项目、发布事件。
 - `internal/api`：HTTP 路由、登录鉴权、配置管理、上线单和执行接口。
 - `internal/release`：批次号生成、tag 生成、按目标分组打包、单项目重试、状态聚合。
 - `internal/gitlab`：创建 tag、触发 pipeline；dry-run 模式下只返回模拟 pipeline。
@@ -26,9 +26,10 @@ flowchart LR
 | `users` | 用户、角色、登录信息 |
 | `business_lines` | 业务线、平台、tag 前缀、tag 模板 |
 | `projects` | 项目基础信息与 GitLab 配置 |
+| `project_business_lines` | 项目与业务线多对多关系 |
 | `project_dependencies` | 项目打包依赖 |
 | `releases` | 上线单主表 |
-| `release_projects` | 上线单内项目、来源、目标 tag、pipeline 状态 |
+| `release_projects` | 上线单内项目、本次业务线、来源、目标 tag、pipeline 状态 |
 | `release_events` | 发布历史时间线 |
 
 ## 发布流程
@@ -41,17 +42,17 @@ sequenceDiagram
   participant DB as 数据库
   participant GL as GitLab
 
-  Dev->>Web: 选择项目和分支/tag/commit
+  Dev->>Web: 选择项目、本次业务线和分支/tag/commit
   Web->>API: POST /api/releases
   API->>DB: 创建上线单和项目快照
   Web->>API: POST /api/releases/:id/tag
   API->>GL: 创建项目 tag
   API->>DB: 更新 tag 状态
   Web->>API: POST /api/releases/:id/package?target=backend
-  API->>GL: 按配置顺序触发 pipeline
+  API->>GL: 按配置顺序触发 pipeline，并传入 ACTION/JOB_NAME 变量
   API->>DB: 记录 pipeline ID 和状态
   Web->>API: POST /api/releases/:id/deploy
-  API->>GL: 触发部署 pipeline
+  API->>GL: 触发部署 pipeline，并传入 ACTION/JOB_NAME 变量
   API->>DB: 写入发布历史
 ```
 

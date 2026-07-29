@@ -24,6 +24,7 @@ func main() {
 		&model.User{},
 		&model.BusinessLine{},
 		&model.Project{},
+		&model.ProjectBusinessLine{},
 		&model.ProjectDependency{},
 		&model.Release{},
 		&model.ReleaseProject{},

@@ -19,6 +19,9 @@ func Seed(db *gorm.DB) error {
 	if err := seedProjects(db); err != nil {
 		return err
 	}
+	if err := seedProjectBusinessLines(db); err != nil {
+		return err
+	}
 	return seedDependencies(db)
 }
 
@@ -116,6 +119,27 @@ func project(code, name, kind, owner string, lineID uint, repo, projectID, branc
 		SortOrder:       order,
 		Enabled:         true,
 	}
+}
+
+func seedProjectBusinessLines(db *gorm.DB) error {
+	var projects []model.Project
+	if err := db.Find(&projects).Error; err != nil {
+		return err
+	}
+	for _, project := range projects {
+		if project.BusinessLineID == 0 {
+			continue
+		}
+		item := model.ProjectBusinessLine{
+			ProjectID:      project.ID,
+			BusinessLineID: project.BusinessLineID,
+		}
+		if err := db.Where("project_id = ? AND business_line_id = ?", item.ProjectID, item.BusinessLineID).
+			FirstOrCreate(&item).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func seedDependencies(db *gorm.DB) error {

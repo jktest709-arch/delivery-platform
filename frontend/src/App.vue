@@ -77,6 +77,7 @@ const releaseForm = reactive({
 });
 
 type SourceForm = {
+  businessLineCode: string;
   sourceType: SourceType;
   sourceRef: string;
 };
@@ -228,7 +229,7 @@ function logout() {
   releases.value = [];
   projects.value = [];
   lines.value = [];
-  activeTab.value = "request";
+  activeTab.value = "apply";
 }
 
 async function loadData() {
@@ -247,7 +248,7 @@ async function loadData() {
   releases.value = releaseResult;
   selectedReleaseId.value = releaseResult[0]?.id ?? null;
   if (!canManageUsers.value && activeTab.value === "users") {
-    activeTab.value = "request";
+    activeTab.value = "apply";
   }
 }
 
@@ -334,11 +335,78 @@ function syncUserState(userResult: User[]) {
 function projectSourceForm(project: Project): SourceForm {
   if (!sourceForms[project.code]) {
     sourceForms[project.code] = {
+      businessLineCode: defaultBusinessLineCode(project),
       sourceType: "branch",
       sourceRef: project.defaultBranch || "main",
     };
   }
+  const codes = projectBusinessLineCodes(project);
+  if (codes.length > 0 && !codes.includes(sourceForms[project.code].businessLineCode)) {
+    sourceForms[project.code].businessLineCode = codes[0];
+  }
   return sourceForms[project.code];
+}
+
+function projectBusinessLineCodes(project: Project) {
+  const codes = Array.isArray(project.businessLineCodes) ? project.businessLineCodes : [];
+  const fallback = project.businessLineCode || project.businessLine?.code || "";
+  return uniqueCodes(codes.length > 0 ? codes : [fallback]);
+}
+
+function uniqueCodes(codes: string[]) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of codes) {
+    const code = item.trim();
+    if (!code || seen.has(code)) {
+      continue;
+    }
+    seen.add(code);
+    result.push(code);
+  }
+  return result;
+}
+
+function defaultBusinessLineCode(project: Project) {
+  return project.businessLineCode || projectBusinessLineCodes(project)[0] || "";
+}
+
+function projectBusinessLineOptions(project: Project) {
+  const codes = projectBusinessLineCodes(project);
+  return codes
+    .map((code) => lines.value.find((line) => line.code === code) ?? project.businessLines?.find((line) => line.code === code))
+    .filter((line): line is BusinessLine => Boolean(line));
+}
+
+function projectBusinessLineNames(project: Project) {
+  const names = projectBusinessLineOptions(project).map((line) => line.name);
+  return names.length > 0 ? names.join(" / ") : project.businessLine?.name || "-";
+}
+
+function releaseBusinessLineName(row: ReleaseProject) {
+  return row.businessLine?.name || projectBusinessLineNames(row.project);
+}
+
+function toggleProjectBusinessLine(form: ProjectForm, code: string) {
+  const nextCodes = new Set(uniqueCodes(form.businessLineCodes ?? []));
+  if (nextCodes.has(code)) {
+    nextCodes.delete(code);
+  } else {
+    nextCodes.add(code);
+  }
+  form.businessLineCodes = Array.from(nextCodes);
+  if (!form.businessLineCodes.includes(form.businessLineCode)) {
+    form.businessLineCode = form.businessLineCodes[0] ?? "";
+  }
+}
+
+function projectFormBusinessLineCodes(form: ProjectForm) {
+  return uniqueCodes(form.businessLineCodes ?? []);
+}
+
+function projectFormLineOptions(form: ProjectForm) {
+  const selectedCodes = projectFormBusinessLineCodes(form);
+  return lines.value.filter((line) => selectedCodes.includes(line.code));
 }
 
 function projectDependencies(project: Project) {
@@ -361,6 +429,7 @@ async function submitRelease() {
       const form = projectSourceForm(project);
       return {
         projectCode: project.code,
+        businessLineCode: form.businessLineCode,
         sourceType: form.sourceType,
         sourceRef: form.sourceRef,
       };
@@ -524,6 +593,7 @@ function emptyProjectForm(): ProjectForm {
     kind: "backend",
     owner: "",
     businessLineCode: lines.value[0]?.code ?? "",
+    businessLineCodes: lines.value[0]?.code ? [lines.value[0].code] : [],
     gitlabUrl: "",
     gitlabProjectId: "",
     defaultBranch: "master",
@@ -535,12 +605,14 @@ function emptyProjectForm(): ProjectForm {
 }
 
 function projectToForm(project: Project): ProjectForm {
+  const codes = projectBusinessLineCodes(project);
   return {
     code: project.code,
     name: project.name,
     kind: project.kind,
     owner: project.owner,
-    businessLineCode: project.businessLineCode || project.businessLine?.code || "",
+    businessLineCode: project.businessLineCode || codes[0] || "",
+    businessLineCodes: codes,
     gitlabUrl: project.gitlabUrl,
     gitlabProjectId: project.gitlabProjectId,
     defaultBranch: project.defaultBranch,
@@ -559,13 +631,18 @@ function projectDraft(project: Project): ProjectForm {
 }
 
 function normalizeProjectForm(form: ProjectForm): ProjectForm {
+  const businessLineCodes = uniqueCodes(form.businessLineCodes ?? []);
+  const businessLineCode = businessLineCodes.includes(form.businessLineCode)
+    ? form.businessLineCode
+    : businessLineCodes[0] || form.businessLineCode.trim();
   return {
     ...form,
     code: form.code.trim(),
     name: form.name.trim(),
     kind: form.kind as ProjectKind,
     owner: form.owner.trim(),
-    businessLineCode: form.businessLineCode.trim(),
+    businessLineCode,
+    businessLineCodes,
     gitlabUrl: form.gitlabUrl.trim(),
     gitlabProjectId: form.gitlabProjectId.trim(),
     defaultBranch: form.defaultBranch.trim(),
@@ -720,7 +797,7 @@ async function saveLineDraft(line: BusinessLine) {
 }
 
 function lineUsageCount(code: string) {
-  return projects.value.filter((project) => (project.businessLineCode || project.businessLine?.code) === code).length;
+  return projects.value.filter((project) => projectBusinessLineCodes(project).includes(code)).length;
 }
 
 function businessLineName(code: string) {
@@ -1068,7 +1145,17 @@ function statusLabel(status: string) {
                   <small>{{ project.gitlabProjectId }}</small>
                 </td>
                 <td>{{ kindText[project.kind] }}</td>
-                <td>{{ project.businessLine?.name }}</td>
+                <td>
+                  <select
+                    v-if="projectBusinessLineOptions(project).length > 1"
+                    v-model="projectSourceForm(project).businessLineCode"
+                  >
+                    <option v-for="line in projectBusinessLineOptions(project)" :key="line.code" :value="line.code">
+                      {{ line.name }}
+                    </option>
+                  </select>
+                  <span v-else>{{ projectBusinessLineNames(project) }}</span>
+                </td>
                 <td>
                   <select v-model="projectSourceForm(project).sourceType">
                     <option value="branch">{{ sourceText.branch }}</option>
@@ -1140,6 +1227,7 @@ function statusLabel(status: string) {
                 <div>
                   <strong>{{ row.project.name }}</strong>
                   <small>{{ row.project.gitlabProjectId }}</small>
+                  <small>{{ releaseBusinessLineName(row) }}</small>
                 </div>
                 <div class="pipeline-step" :class="tagStepState(row)">
                   <span>{{ pipelineStepLabel(tagStepState(row)) }}</span>
@@ -1152,7 +1240,7 @@ function statusLabel(status: string) {
                   <a v-if="row.buildJobId" :href="pipelineUrl(row, row.buildJobId)" target="_blank">
                     #{{ row.buildJobId }}
                   </a>
-                  <small v-else>{{ row.project.packageJob }}</small>
+                  <small v-else>JOB_NAME={{ row.project.packageJob }}</small>
                 </div>
                 <div class="pipeline-step" :class="deployStepState(row)">
                   <span>{{ pipelineStepLabel(deployStepState(row)) }}</span>
@@ -1160,7 +1248,7 @@ function statusLabel(status: string) {
                   <a v-if="row.deployJobId" :href="pipelineUrl(row, row.deployJobId)" target="_blank">
                     #{{ row.deployJobId }}
                   </a>
-                  <small v-else>{{ row.project.deployJob }}</small>
+                  <small v-else>JOB_NAME={{ row.project.deployJob }}</small>
                 </div>
               </article>
             </div>
@@ -1194,7 +1282,7 @@ function statusLabel(status: string) {
                   <td>{{ row.sortOrder }}</td>
                   <td>
                     <strong>{{ row.project.name }}</strong>
-                    <small>{{ kindText[row.project.kind] }} / {{ row.project.owner }}</small>
+                    <small>{{ kindText[row.project.kind] }} / {{ releaseBusinessLineName(row) }} / {{ row.project.owner }}</small>
                   </td>
                   <td>{{ sourceText[row.sourceType] }}: {{ row.sourceRef }}</td>
                   <td><code>{{ row.targetTag }}</code></td>
@@ -1236,10 +1324,25 @@ function statusLabel(status: string) {
                 <option value="frontend">前端</option>
               </select>
             </label>
+            <div class="field wide">
+              <span>关联业务线</span>
+              <div class="check-grid">
+                <label v-for="line in lines" :key="line.code" class="checkbox-field compact-check">
+                  <input
+                    :checked="projectFormBusinessLineCodes(newProjectForm).includes(line.code)"
+                    type="checkbox"
+                    @change="toggleProjectBusinessLine(newProjectForm, line.code)"
+                  />
+                  <span>{{ line.name }}</span>
+                </label>
+              </div>
+            </div>
             <label>
-              <span>业务线</span>
+              <span>默认业务线</span>
               <select v-model="newProjectForm.businessLineCode" required>
-                <option v-for="line in lines" :key="line.code" :value="line.code">{{ line.name }}</option>
+                <option v-for="line in projectFormLineOptions(newProjectForm)" :key="line.code" :value="line.code">
+                  {{ line.name }}
+                </option>
               </select>
             </label>
             <label class="wide">
@@ -1255,11 +1358,11 @@ function statusLabel(status: string) {
               <input v-model="newProjectForm.defaultBranch" required />
             </label>
             <label>
-              <span>打包 Job</span>
+              <span>打包 Pipeline 变量</span>
               <input v-model="newProjectForm.packageJob" required />
             </label>
             <label>
-              <span>部署 Job</span>
+              <span>部署 Pipeline 变量</span>
               <input v-model="newProjectForm.deployJob" required />
             </label>
             <label>
@@ -1289,7 +1392,7 @@ function statusLabel(status: string) {
                 <th>项目</th>
                 <th>类型 / 业务线</th>
                 <th>GitLab 仓库</th>
-                <th>默认分支 / Job</th>
+                <th>默认分支 / Pipeline 变量</th>
                 <th>负责人</th>
                 <th>状态</th>
                 <th>操作</th>
@@ -1322,13 +1425,25 @@ function statusLabel(status: string) {
                       <option value="backend">后端</option>
                       <option value="frontend">前端</option>
                     </select>
+                    <div class="check-grid compact-grid">
+                      <label v-for="line in lines" :key="line.code" class="checkbox-field compact-check">
+                        <input
+                          :checked="projectFormBusinessLineCodes(projectDraft(project)).includes(line.code)"
+                          type="checkbox"
+                          @change="toggleProjectBusinessLine(projectDraft(project), line.code)"
+                        />
+                        <span>{{ line.name }}</span>
+                      </label>
+                    </div>
                     <select v-model="projectDraft(project).businessLineCode">
-                      <option v-for="line in lines" :key="line.code" :value="line.code">{{ line.name }}</option>
+                      <option v-for="line in projectFormLineOptions(projectDraft(project))" :key="line.code" :value="line.code">
+                        {{ line.name }}
+                      </option>
                     </select>
                   </template>
                   <template v-else>
                     <span>{{ kindText[project.kind] }}</span>
-                    <small>{{ project.businessLine?.name }}</small>
+                    <small>{{ projectBusinessLineNames(project) }}</small>
                   </template>
                 </td>
                 <td class="stack-cell">
@@ -1349,7 +1464,7 @@ function statusLabel(status: string) {
                   </template>
                   <template v-else>
                     <span>{{ project.defaultBranch }}</span>
-                    <small>{{ project.packageJob }} / {{ project.deployJob }}</small>
+                    <small>JOB_NAME={{ project.packageJob }} / {{ project.deployJob }}</small>
                   </template>
                 </td>
                 <td>

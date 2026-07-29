@@ -39,6 +39,8 @@ export type Project = {
   owner: string;
   businessLineCode: string;
   businessLine: BusinessLine;
+  businessLineCodes?: string[];
+  businessLines?: BusinessLine[];
   gitlabUrl: string;
   gitlabProjectId: string;
   defaultBranch: string;
@@ -49,13 +51,15 @@ export type Project = {
   dependencies: string[] | null;
 };
 
-export type ProjectPayload = Omit<Project, "id" | "businessLine" | "dependencies">;
+export type ProjectPayload = Omit<Project, "id" | "businessLine" | "businessLines" | "dependencies">;
 
 export type ReleaseProject = {
   id: number;
   releaseId: number;
   projectId: number;
   project: Project;
+  businessLineId?: number;
+  businessLine?: BusinessLine;
   sourceType: SourceType;
   sourceRef: string;
   targetTag: string;
@@ -95,6 +99,7 @@ export type CreateReleasePayload = {
   remark: string;
   projects: Array<{
     projectCode: string;
+    businessLineCode: string;
     sourceType: SourceType;
     sourceRef: string;
   }>;

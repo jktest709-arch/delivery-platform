@@ -19,6 +19,27 @@ const projectsPayload = [
       tagTemplate: "{prefix}-{date}-{releaseNo}",
       approver: "平台 SRE",
     },
+    businessLineCodes: ["ops", "aa"],
+    businessLines: [
+      {
+        id: 1,
+        code: "ops",
+        name: "OPS 平台业务线",
+        platform: "OPSPRD",
+        tagPrefix: "opsprd",
+        tagTemplate: "{prefix}-{date}-{releaseNo}",
+        approver: "平台 SRE",
+      },
+      {
+        id: 2,
+        code: "aa",
+        name: "AA 零售业务线",
+        platform: "AAPRD",
+        tagPrefix: "aaprd",
+        tagTemplate: "{prefix}-{date}-{releaseNo}",
+        approver: "交易发布经理",
+      },
+    ],
     gitlabUrl: "https://gitlab.corp/delivery/base-auth",
     gitlabProjectId: "delivery/base-auth",
     defaultBranch: "master",
@@ -44,6 +65,18 @@ const projectsPayload = [
       tagTemplate: "{prefix}-{date}-{releaseNo}",
       approver: "交易发布经理",
     },
+    businessLineCodes: ["aa"],
+    businessLines: [
+      {
+        id: 2,
+        code: "aa",
+        name: "AA 零售业务线",
+        platform: "AAPRD",
+        tagPrefix: "aaprd",
+        tagTemplate: "{prefix}-{date}-{releaseNo}",
+        approver: "交易发布经理",
+      },
+    ],
     gitlabUrl: "https://gitlab.corp/delivery/order-core",
     gitlabProjectId: "delivery/order-core",
     defaultBranch: "master",
@@ -113,6 +146,8 @@ const releasesPayload = [
         releaseId: 1,
         projectId: 1,
         project: projectsPayload[0],
+        businessLineId: 1,
+        businessLine: projectsPayload[0].businessLine,
         sourceType: "branch",
         sourceRef: "master",
         targetTag: "opsprd-20260729100000-001",
@@ -172,8 +207,12 @@ describe("App", () => {
 
     await wrapper.findAll("button").find((item) => item.text() === "项目配置")!.trigger("click");
     expect(wrapper.text()).toContain("新增项目");
+    expect(wrapper.text()).toContain("Pipeline 变量");
     expect(wrapper.text()).toContain("编辑");
     expect(wrapper.text()).toContain("删除");
+    await wrapper.findAll("button").find((item) => item.text() === "新增项目")!.trigger("click");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain("默认业务线");
 
     await wrapper.findAll("button").find((item) => item.text() === "Tag 与依赖")!.trigger("click");
     expect(wrapper.text()).toContain("新增业务线");

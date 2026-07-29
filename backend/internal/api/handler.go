@@ -35,23 +35,25 @@ type userRequest struct {
 
 type projectDTO struct {
 	model.Project
-	BusinessLineCode string   `json:"businessLineCode"`
-	Dependencies     []string `json:"dependencies"`
+	BusinessLineCode  string   `json:"businessLineCode"`
+	BusinessLineCodes []string `json:"businessLineCodes"`
+	Dependencies      []string `json:"dependencies"`
 }
 
 type projectRequest struct {
-	Code             string `json:"code"`
-	Name             string `json:"name"`
-	Kind             string `json:"kind"`
-	Owner            string `json:"owner"`
-	BusinessLineCode string `json:"businessLineCode"`
-	GitLabURL        string `json:"gitlabUrl"`
-	GitLabProjectID  string `json:"gitlabProjectId"`
-	DefaultBranch    string `json:"defaultBranch"`
-	PackageJob       string `json:"packageJob"`
-	DeployJob        string `json:"deployJob"`
-	SortOrder        int    `json:"sortOrder"`
-	Enabled          *bool  `json:"enabled"`
+	Code              string   `json:"code"`
+	Name              string   `json:"name"`
+	Kind              string   `json:"kind"`
+	Owner             string   `json:"owner"`
+	BusinessLineCode  string   `json:"businessLineCode"`
+	BusinessLineCodes []string `json:"businessLineCodes"`
+	GitLabURL         string   `json:"gitlabUrl"`
+	GitLabProjectID   string   `json:"gitlabProjectId"`
+	DefaultBranch     string   `json:"defaultBranch"`
+	PackageJob        string   `json:"packageJob"`
+	DeployJob         string   `json:"deployJob"`
+	SortOrder         int      `json:"sortOrder"`
+	Enabled           *bool    `json:"enabled"`
 }
 
 type businessLineRequest struct {
@@ -233,6 +235,11 @@ func (h Handler) listProjects(c *gin.Context) {
 }
 
 func (h Handler) updateProject(c *gin.Context) {
+	var project model.Project
+	if err := h.db.Where("code = ?", c.Param("code")).First(&project).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "项目不存在"})
+		return
+	}
 	var req projectRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
@@ -240,18 +247,19 @@ func (h Handler) updateProject(c *gin.Context) {
 	}
 	req.Code = c.Param("code")
 
-	updates, err := h.projectUpdates(req)
+	updates, businessLines, err := h.projectUpdates(req)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
-	result := h.db.Model(&model.Project{}).Where("code = ?", c.Param("code")).Updates(updates)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": result.Error.Error()})
-		return
-	}
-	if result.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"message": "项目不存在"})
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&project).Updates(updates).Error; err != nil {
+			return err
+		}
+		return replaceProjectBusinessLines(tx, project.ID, businessLines)
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
 	h.listProjects(c)
@@ -265,7 +273,7 @@ func (h Handler) createProject(c *gin.Context) {
 	}
 	code := strings.TrimSpace(req.Code)
 	req.Code = code
-	updates, err := h.projectUpdates(req)
+	updates, businessLines, err := h.projectUpdates(req)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
@@ -280,7 +288,13 @@ func (h Handler) createProject(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "项目 Code 已存在"})
 			return
 		}
-		if err := h.db.Model(&existing).Updates(updates).Error; err != nil {
+		err := h.db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Model(&existing).Updates(updates).Error; err != nil {
+				return err
+			}
+			return replaceProjectBusinessLines(tx, existing.ID, businessLines)
+		})
+		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 			return
 		}
@@ -291,7 +305,7 @@ func (h Handler) createProject(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	if err := h.db.Create(&model.Project{
+	project := model.Project{
 		Code:            updates["code"].(string),
 		Name:            updates["name"].(string),
 		Kind:            updates["kind"].(string),
@@ -304,7 +318,14 @@ func (h Handler) createProject(c *gin.Context) {
 		DeployJob:       updates["deploy_job"].(string),
 		SortOrder:       updates["sort_order"].(int),
 		Enabled:         true,
-	}).Error; err != nil {
+	}
+	err = h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&project).Error; err != nil {
+			return err
+		}
+		return replaceProjectBusinessLines(tx, project.ID, businessLines)
+	})
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
@@ -318,6 +339,9 @@ func (h Handler) deleteProject(c *gin.Context) {
 		return
 	}
 	err := h.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("project_id = ?", project.ID).Delete(&model.ProjectBusinessLine{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("project_id = ? OR depends_on_project_id = ?", project.ID, project.ID).Delete(&model.ProjectDependency{}).Error; err != nil {
 			return err
 		}
@@ -404,12 +428,12 @@ func (h Handler) deleteBusinessLine(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"message": "业务线不存在"})
 		return
 	}
-	var count int64
-	if err := h.db.Model(&model.Project{}).Where("business_line_id = ?", line.ID).Count(&count).Error; err != nil {
+	projectIDs, err := h.projectIDsUsingBusinessLine(line.ID)
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	if count > 0 {
+	if len(projectIDs) > 0 {
 		replacementCode := strings.TrimSpace(c.Query("replacementCode"))
 		if replacementCode == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"message": "业务线已被项目使用，请选择替代业务线后删除"})
@@ -425,6 +449,19 @@ func (h Handler) deleteBusinessLine(c *gin.Context) {
 			return
 		}
 		err := h.db.Transaction(func(tx *gorm.DB) error {
+			for _, projectID := range projectIDs {
+				item := model.ProjectBusinessLine{
+					ProjectID:      projectID,
+					BusinessLineID: replacement.ID,
+				}
+				if err := tx.Where("project_id = ? AND business_line_id = ?", item.ProjectID, item.BusinessLineID).
+					FirstOrCreate(&item).Error; err != nil {
+					return err
+				}
+			}
+			if err := tx.Where("business_line_id = ?", line.ID).Delete(&model.ProjectBusinessLine{}).Error; err != nil {
+				return err
+			}
 			if err := tx.Model(&model.Project{}).
 				Where("business_line_id = ?", line.ID).
 				Update("business_line_id", replacement.ID).Error; err != nil {
@@ -597,7 +634,12 @@ func (h Handler) deployReleaseProject(c *gin.Context) {
 
 func (h Handler) projectsWithDependencies() ([]projectDTO, error) {
 	var projects []model.Project
-	if err := h.db.Preload("BusinessLine").Where("enabled = ?", true).Order("sort_order asc").Find(&projects).Error; err != nil {
+	if err := h.db.
+		Preload("BusinessLine").
+		Preload("BusinessLines").
+		Where("enabled = ?", true).
+		Order("sort_order asc").
+		Find(&projects).Error; err != nil {
 		return nil, err
 	}
 
@@ -625,30 +667,32 @@ func (h Handler) projectsWithDependencies() ([]projectDTO, error) {
 			dependencies = []string{}
 		}
 		sort.Strings(dependencies)
+		businessLineCodes := projectBusinessLineCodes(project)
 		result = append(result, projectDTO{
-			Project:          project,
-			BusinessLineCode: project.BusinessLine.Code,
-			Dependencies:     dependencies,
+			Project:           project,
+			BusinessLineCode:  project.BusinessLine.Code,
+			BusinessLineCodes: businessLineCodes,
+			Dependencies:      dependencies,
 		})
 	}
 	return result, nil
 }
 
-func (h Handler) projectUpdates(req projectRequest) (map[string]interface{}, error) {
+func (h Handler) projectUpdates(req projectRequest) (map[string]interface{}, []model.BusinessLine, error) {
 	code := strings.TrimSpace(req.Code)
 	if code == "" {
-		return nil, errMessage("项目 Code 不能为空")
+		return nil, nil, errMessage("项目 Code 不能为空")
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
-		return nil, errMessage("项目名称不能为空")
+		return nil, nil, errMessage("项目名称不能为空")
 	}
 	if req.Kind != model.ProjectKindBackend && req.Kind != model.ProjectKindFrontend {
-		return nil, errMessage("项目类型只能是 backend 或 frontend")
+		return nil, nil, errMessage("项目类型只能是 backend 或 frontend")
 	}
-	var line model.BusinessLine
-	if err := h.db.Where("code = ?", strings.TrimSpace(req.BusinessLineCode)).First(&line).Error; err != nil {
-		return nil, errMessage("业务线不存在")
+	businessLines, err := h.projectBusinessLineSelection(req)
+	if err != nil {
+		return nil, nil, err
 	}
 	enabled := true
 	if req.Enabled != nil {
@@ -658,7 +702,7 @@ func (h Handler) projectUpdates(req projectRequest) (map[string]interface{}, err
 		"name":               name,
 		"kind":               req.Kind,
 		"owner":              strings.TrimSpace(req.Owner),
-		"business_line_id":   line.ID,
+		"business_line_id":   businessLines[0].ID,
 		"git_lab_url":        strings.TrimSpace(req.GitLabURL),
 		"git_lab_project_id": strings.TrimSpace(req.GitLabProjectID),
 		"default_branch":     strings.TrimSpace(req.DefaultBranch),
@@ -666,7 +710,106 @@ func (h Handler) projectUpdates(req projectRequest) (map[string]interface{}, err
 		"deploy_job":         strings.TrimSpace(req.DeployJob),
 		"sort_order":         req.SortOrder,
 		"enabled":            enabled,
-	}, nil
+	}, businessLines, nil
+}
+
+func (h Handler) projectBusinessLineSelection(req projectRequest) ([]model.BusinessLine, error) {
+	codes := normalizedProjectBusinessLineCodes(req)
+	if len(codes) == 0 {
+		return nil, errMessage("至少选择一条业务线")
+	}
+
+	lines := make([]model.BusinessLine, 0, len(codes))
+	for _, code := range codes {
+		var line model.BusinessLine
+		if err := h.db.Where("code = ?", code).First(&line).Error; err != nil {
+			return nil, errMessage("业务线不存在：" + code)
+		}
+		lines = append(lines, line)
+	}
+	return lines, nil
+}
+
+func normalizedProjectBusinessLineCodes(req projectRequest) []string {
+	codes := []string{}
+	seen := map[string]bool{}
+	add := func(value string) {
+		code := strings.TrimSpace(value)
+		if code == "" || seen[code] {
+			return
+		}
+		seen[code] = true
+		codes = append(codes, code)
+	}
+	add(req.BusinessLineCode)
+	for _, code := range req.BusinessLineCodes {
+		add(code)
+	}
+	return codes
+}
+
+func replaceProjectBusinessLines(tx *gorm.DB, projectID uint, lines []model.BusinessLine) error {
+	if err := tx.Where("project_id = ?", projectID).Delete(&model.ProjectBusinessLine{}).Error; err != nil {
+		return err
+	}
+	for _, line := range lines {
+		item := model.ProjectBusinessLine{
+			ProjectID:      projectID,
+			BusinessLineID: line.ID,
+		}
+		if err := tx.Create(&item).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h Handler) projectIDsUsingBusinessLine(businessLineID uint) ([]uint, error) {
+	projectIDSet := map[uint]bool{}
+
+	var relationIDs []uint
+	if err := h.db.Model(&model.ProjectBusinessLine{}).
+		Where("business_line_id = ?", businessLineID).
+		Pluck("project_id", &relationIDs).Error; err != nil {
+		return nil, err
+	}
+	for _, id := range relationIDs {
+		projectIDSet[id] = true
+	}
+
+	var defaultIDs []uint
+	if err := h.db.Model(&model.Project{}).
+		Where("business_line_id = ?", businessLineID).
+		Pluck("id", &defaultIDs).Error; err != nil {
+		return nil, err
+	}
+	for _, id := range defaultIDs {
+		projectIDSet[id] = true
+	}
+
+	result := make([]uint, 0, len(projectIDSet))
+	for id := range projectIDSet {
+		result = append(result, id)
+	}
+	return result, nil
+}
+
+func projectBusinessLineCodes(project model.Project) []string {
+	codes := []string{}
+	seen := map[string]bool{}
+	add := func(code string) {
+		code = strings.TrimSpace(code)
+		if code == "" || seen[code] {
+			return
+		}
+		seen[code] = true
+		codes = append(codes, code)
+	}
+	add(project.BusinessLine.Code)
+	for _, line := range project.BusinessLines {
+		add(line.Code)
+	}
+	return codes
 }
 
 func (h Handler) businessLineUpdates(req businessLineRequest) (map[string]interface{}, error) {

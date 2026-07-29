@@ -17,6 +17,27 @@ const projectsPayload = [
       tagTemplate: "{prefix}-{date}-{releaseNo}",
       approver: "平台 SRE",
     },
+    businessLineCodes: ["ops", "aa"],
+    businessLines: [
+      {
+        id: 1,
+        code: "ops",
+        name: "OPS 平台业务线",
+        platform: "OPSPRD",
+        tagPrefix: "opsprd",
+        tagTemplate: "{prefix}-{date}-{releaseNo}",
+        approver: "平台 SRE",
+      },
+      {
+        id: 2,
+        code: "aa",
+        name: "AA 零售业务线",
+        platform: "AAPRD",
+        tagPrefix: "aaprd",
+        tagTemplate: "{prefix}-{date}-{releaseNo}",
+        approver: "交易发布经理",
+      },
+    ],
     gitlabUrl: "https://gitlab.corp/delivery/base-auth",
     gitlabProjectId: "delivery/base-auth",
     defaultBranch: "master",
@@ -42,6 +63,18 @@ const projectsPayload = [
       tagTemplate: "{prefix}-{date}-{releaseNo}",
       approver: "交易发布经理",
     },
+    businessLineCodes: ["aa"],
+    businessLines: [
+      {
+        id: 2,
+        code: "aa",
+        name: "AA 零售业务线",
+        platform: "AAPRD",
+        tagPrefix: "aaprd",
+        tagTemplate: "{prefix}-{date}-{releaseNo}",
+        approver: "交易发布经理",
+      },
+    ],
     gitlabUrl: "https://gitlab.corp/delivery/order-core",
     gitlabProjectId: "delivery/order-core",
     defaultBranch: "master",
@@ -111,6 +144,8 @@ const releasesPayload = [
         releaseId: 1,
         projectId: 1,
         project: projectsPayload[0],
+        businessLineId: 1,
+        businessLine: projectsPayload[0].businessLine,
         sourceType: "branch",
         sourceRef: "master",
         targetTag: "opsprd-20260729100000-001",
@@ -182,8 +217,11 @@ test("admin can log in and visit every main page without runtime errors", async 
 
   await page.getByRole("button", { name: "项目配置" }).click();
   await expect(page.getByRole("button", { name: "新增项目" })).toBeVisible();
+  await expect(page.getByText("Pipeline 变量")).toBeVisible();
   await expect(page.getByRole("button", { name: "编辑" }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "删除" }).first()).toBeVisible();
+  await page.getByRole("button", { name: "新增项目" }).click();
+  await expect(page.getByText("默认业务线")).toBeVisible();
 
   await page.getByRole("button", { name: "Tag 与依赖" }).click();
   await expect(page.getByRole("button", { name: "新增业务线" })).toBeVisible();

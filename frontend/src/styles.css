@@ -280,10 +280,16 @@ label {
   gap: 6px;
 }
 
-label span {
+label span,
+.field > span {
   color: #475467;
   font-size: 12px;
   font-weight: 700;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
 }
 
 .table-wrap {
@@ -518,6 +524,19 @@ tr:last-child td {
 .compact-check {
   min-height: 26px;
   margin-right: 0;
+}
+
+.check-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-height: 34px;
+  align-items: center;
+}
+
+.compact-grid {
+  display: grid;
+  gap: 4px;
 }
 
 .config-table table {

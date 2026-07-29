@@ -60,6 +60,7 @@ func TestProjectConfigCanCreateUpdateAndDeleteProject(t *testing.T) {
 		"kind":"backend",
 		"owner":"搜索组",
 		"businessLineCode":"ops",
+		"businessLineCodes":["ops","aa"],
 		"gitlabUrl":"https://gitlab.corp/delivery/search-api",
 		"gitlabProjectId":"delivery/search-api",
 		"defaultBranch":"master",
@@ -73,6 +74,7 @@ func TestProjectConfigCanCreateUpdateAndDeleteProject(t *testing.T) {
 		t.Fatalf("POST /api/projects status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	assertProjectName(t, recorder.Body.Bytes(), "search-api", "搜索服务")
+	assertProjectBusinessLineCodes(t, recorder.Body.Bytes(), "search-api", []string{"ops", "aa"})
 
 	updateBody := strings.Replace(body, "搜索服务", "搜索服务 V2", 1)
 	recorder = authedRequest(t, router, token, http.MethodPut, "/api/projects/search-api", updateBody)
@@ -80,6 +82,7 @@ func TestProjectConfigCanCreateUpdateAndDeleteProject(t *testing.T) {
 		t.Fatalf("PUT /api/projects/search-api status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 	assertProjectName(t, recorder.Body.Bytes(), "search-api", "搜索服务 V2")
+	assertProjectBusinessLineCodes(t, recorder.Body.Bytes(), "search-api", []string{"ops", "aa"})
 
 	recorder = authedRequest(t, router, token, http.MethodDelete, "/api/projects/search-api", "")
 	if recorder.Code != http.StatusOK {
@@ -129,6 +132,45 @@ func TestBusinessLineDeleteCanMigrateUsedProjects(t *testing.T) {
 	}
 	assertProjectBusinessLine(t, recorder.Body.Bytes(), "base-auth", "aa")
 	assertProjectBusinessLine(t, recorder.Body.Bytes(), "reporting", "aa")
+	assertProjectBusinessLineCodes(t, recorder.Body.Bytes(), "base-auth", []string{"aa"})
+	assertProjectBusinessLineCodes(t, recorder.Body.Bytes(), "reporting", []string{"aa"})
+}
+
+func TestReleaseUsesSelectedBusinessLineForTag(t *testing.T) {
+	router := newTestRouter(t)
+	token := login(t, router)
+
+	projectBody := `{
+		"code":"base-auth",
+		"name":"统一认证中心",
+		"kind":"backend",
+		"owner":"平台组",
+		"businessLineCode":"ops",
+		"businessLineCodes":["ops","aa"],
+		"gitlabUrl":"https://gitlab.corp/delivery/base-auth",
+		"gitlabProjectId":"delivery/base-auth",
+		"defaultBranch":"master",
+		"packageJob":"build-auth-prd",
+		"deployJob":"deploy-auth-prd",
+		"sortOrder":10,
+		"enabled":true
+	}`
+	recorder := authedRequest(t, router, token, http.MethodPut, "/api/projects/base-auth", projectBody)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("PUT /api/projects/base-auth status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	releaseBody := `{
+		"releaseWindow":"2026-07-29T10:00:00Z",
+		"remark":"multi line tag",
+		"projects":[{"projectCode":"base-auth","businessLineCode":"aa","sourceType":"branch","sourceRef":"master"}]
+	}`
+	recorder = authedRequest(t, router, token, http.MethodPost, "/api/releases", releaseBody)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("POST /api/releases status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	assertReleaseProjectTagPrefix(t, recorder.Body.Bytes(), "base-auth", "aaprd-")
+	assertReleaseProjectBusinessLine(t, recorder.Body.Bytes(), "base-auth", "aa")
 }
 
 func TestUserManagementCanCreateUpdateAndDeleteUser(t *testing.T) {
@@ -256,6 +298,7 @@ func newTestRouter(t *testing.T) *gin.Engine {
 		&model.User{},
 		&model.BusinessLine{},
 		&model.Project{},
+		&model.ProjectBusinessLine{},
 		&model.ProjectDependency{},
 		&model.Release{},
 		&model.ReleaseProject{},
@@ -391,6 +434,84 @@ func assertProjectBusinessLine(t *testing.T, body []byte, code string, businessL
 		}
 	}
 	t.Fatalf("project %s not found in response: %s", code, string(body))
+}
+
+func assertProjectBusinessLineCodes(t *testing.T, body []byte, code string, businessLineCodes []string) {
+	t.Helper()
+	var payload []map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode projects response: %v", err)
+	}
+	for _, project := range payload {
+		if project["code"] != code {
+			continue
+		}
+		values, ok := project["businessLineCodes"].([]any)
+		if !ok {
+			t.Fatalf("project %s businessLineCodes type = %T, want array", code, project["businessLineCodes"])
+		}
+		actual := map[string]bool{}
+		for _, value := range values {
+			actual[value.(string)] = true
+		}
+		for _, expected := range businessLineCodes {
+			if !actual[expected] {
+				t.Fatalf("project %s businessLineCodes = %v, missing %s", code, values, expected)
+			}
+		}
+		if len(values) != len(businessLineCodes) {
+			t.Fatalf("project %s businessLineCodes = %v, want %v", code, values, businessLineCodes)
+		}
+		return
+	}
+	t.Fatalf("project %s not found in response: %s", code, string(body))
+}
+
+func assertReleaseProjectTagPrefix(t *testing.T, body []byte, projectCode string, prefix string) {
+	t.Helper()
+	var payload struct {
+		Projects []map[string]any `json:"projects"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode release response: %v", err)
+	}
+	for _, item := range payload.Projects {
+		project, ok := item["project"].(map[string]any)
+		if !ok || project["code"] != projectCode {
+			continue
+		}
+		tag, _ := item["targetTag"].(string)
+		if !strings.HasPrefix(tag, prefix) {
+			t.Fatalf("project %s targetTag = %s, want prefix %s", projectCode, tag, prefix)
+		}
+		return
+	}
+	t.Fatalf("project %s not found in release response: %s", projectCode, string(body))
+}
+
+func assertReleaseProjectBusinessLine(t *testing.T, body []byte, projectCode string, businessLineCode string) {
+	t.Helper()
+	var payload struct {
+		Projects []map[string]any `json:"projects"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("decode release response: %v", err)
+	}
+	for _, item := range payload.Projects {
+		project, ok := item["project"].(map[string]any)
+		if !ok || project["code"] != projectCode {
+			continue
+		}
+		line, ok := item["businessLine"].(map[string]any)
+		if !ok {
+			t.Fatalf("project %s businessLine missing in release response", projectCode)
+		}
+		if line["code"] != businessLineCode {
+			t.Fatalf("project %s businessLine = %v, want %s", projectCode, line["code"], businessLineCode)
+		}
+		return
+	}
+	t.Fatalf("project %s not found in release response: %s", projectCode, string(body))
 }
 
 func assertUserRole(t *testing.T, body []byte, username string, role string) uint {
