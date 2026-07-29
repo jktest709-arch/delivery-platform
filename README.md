@@ -121,7 +121,9 @@ GITLAB_BASE_URL=https://gitlab.your-company.com
 GITLAB_TOKEN=<Personal Access Token 或 Project Access Token>
 ```
 
-Token 至少需要具备创建 tag、读取 pipeline/jobs、触发 manual job 的权限。项目配置里的 `GitLab Project ID` 支持数字 ID，也支持 `group/project` 路径。
+`GITLAB_BASE_URL` 填 GitLab 站点根地址即可，例如 `https://gitlab.your-company.com`，不要填具体项目仓库地址。即使误填成 `https://gitlab.your-company.com/api/v4`，后端也会自动兼容为站点根地址。
+
+Token 至少需要具备创建 tag、读取 pipeline/jobs、触发 manual job 的权限。项目配置里的 `GitLab Project ID` 支持数字 ID，也支持 `group/project` 路径；这里不要填写 `https://gitlab.../group/project` 这种完整仓库 URL。
 
 ## 当前功能
 

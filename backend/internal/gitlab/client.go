@@ -42,7 +42,7 @@ type JobResponse struct {
 
 func NewClient(cfg Config) *Client {
 	return &Client{
-		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
+		baseURL: normalizeBaseURL(cfg.BaseURL),
 		token:   cfg.Token,
 		dryRun:  cfg.DryRun,
 		http: &http.Client{
@@ -70,7 +70,10 @@ func (c *Client) CreateTag(ctx context.Context, projectID, tagName, ref string) 
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("PRIVATE-TOKEN", c.token)
-	return c.do(req, nil)
+	if err := c.do(req, nil); err != nil {
+		return fmt.Errorf("create tag %q from ref %q for GitLab project %q: %w", tagName, ref, projectID, err)
+	}
+	return nil
 }
 
 func (c *Client) FindPipelineByRef(ctx context.Context, projectID, ref string) (PipelineResponse, error) {
@@ -101,10 +104,10 @@ func (c *Client) FindPipelineByRef(ctx context.Context, projectID, ref string) (
 		WebURL string `json:"web_url"`
 	}
 	if err := c.do(req, &payload); err != nil {
-		return PipelineResponse{}, err
+		return PipelineResponse{}, fmt.Errorf("query pipeline for ref %q in GitLab project %q: %w", ref, projectID, err)
 	}
 	if len(payload) == 0 {
-		return PipelineResponse{}, fmt.Errorf("gitlab pipeline for ref %s not found", ref)
+		return PipelineResponse{}, fmt.Errorf("gitlab pipeline for ref %q in project %q not found", ref, projectID)
 	}
 	return PipelineResponse{
 		ID:     strconv.Itoa(payload[0].ID),
@@ -142,7 +145,7 @@ func (c *Client) ListPipelineJobs(ctx context.Context, projectID, pipelineID str
 		AllowFailure bool   `json:"allow_failure"`
 	}
 	if err := c.do(req, &payload); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list jobs for pipeline %q in GitLab project %q: %w", pipelineID, projectID, err)
 	}
 	jobs := make([]JobResponse, 0, len(payload))
 	for _, item := range payload {
@@ -189,7 +192,7 @@ func (c *Client) PlayJob(ctx context.Context, projectID, jobID string) (JobRespo
 		AllowFailure bool   `json:"allow_failure"`
 	}
 	if err := c.do(req, &payload); err != nil {
-		return JobResponse{}, err
+		return JobResponse{}, fmt.Errorf("play job %q in GitLab project %q: %w", jobID, projectID, err)
 	}
 	return JobResponse{
 		ID:           strconv.Itoa(payload.ID),
@@ -202,6 +205,14 @@ func (c *Client) PlayJob(ctx context.Context, projectID, jobID string) (JobRespo
 	}, nil
 }
 
+func normalizeBaseURL(baseURL string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if strings.HasSuffix(strings.ToLower(baseURL), "/api/v4") {
+		baseURL = strings.TrimRight(baseURL[:len(baseURL)-len("/api/v4")], "/")
+	}
+	return baseURL
+}
+
 func (c *Client) do(req *http.Request, out interface{}) error {
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -211,10 +222,43 @@ func (c *Client) do(req *http.Request, out interface{}) error {
 
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("gitlab api %s: %s", resp.Status, string(data))
+		return fmt.Errorf("gitlab api %s %s returned %s: %s", req.Method, req.URL.Redacted(), resp.Status, gitLabErrorMessage(data, resp.StatusCode))
 	}
 	if out == nil || len(data) == 0 {
 		return nil
 	}
 	return json.Unmarshal(data, out)
+}
+
+func gitLabErrorMessage(data []byte, statusCode int) string {
+	body := strings.TrimSpace(string(data))
+	if body == "" {
+		return http.StatusText(statusCode)
+	}
+	var payload struct {
+		Message          interface{} `json:"message"`
+		Error            string      `json:"error"`
+		ErrorDescription string      `json:"error_description"`
+	}
+	if err := json.Unmarshal(data, &payload); err == nil {
+		switch message := payload.Message.(type) {
+		case string:
+			if strings.TrimSpace(message) != "" {
+				return message
+			}
+		case nil:
+		default:
+			encoded, _ := json.Marshal(message)
+			if len(encoded) > 0 && string(encoded) != "null" {
+				return string(encoded)
+			}
+		}
+		if strings.TrimSpace(payload.ErrorDescription) != "" {
+			return payload.ErrorDescription
+		}
+		if strings.TrimSpace(payload.Error) != "" {
+			return payload.Error
+		}
+	}
+	return body
 }
