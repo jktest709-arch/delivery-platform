@@ -141,15 +141,16 @@ Token 至少需要具备创建 tag、读取 pipeline/jobs、触发 manual job �
 - 范围打 tag 构建：支持全量、后端、前端三种范围；对匹配项目按依赖顺序生成生产 tag，并等待当前项目自动构建结束后再处理下一个项目。
 - Pipeline 流程：执行台按项目展示创建 Tag、Tag 触发的 Pipeline、GitLab jobs 状态；真实模式下创建 Tag 调用 GitLab Tags API，随后按 tag 查询 Pipeline，再通过 Jobs API 获取 build/deploy jobs；没有 deploy job 的 lib 类项目只展示构建链路。
 - 断点续建：再次点击全量/后端/前端打 Tag 构建时，会跳过已构建成功项目，失败项目优先 retry 已有 build/package job，成功后继续后续项目。
+- 来源调整：构建执行台可修改单项目本次发布来源分支、Tag 或 Commit；保存后会标记为来源已变更，下一次范围打 Tag 构建或单项目最新来源重打 Tag 会使用最新来源。
 - 全量重打新 Tag 构建：清空当前上线单所有项目的 pipeline/job 状态，生成新的生产 tag，并从第一个项目重新按依赖顺序触发 GitLab CI。
-- 单项目操作：支持单项目重新构建和部署；重新构建会优先 play manual build job，否则对已有 build/package job 调用 GitLab retry job API。
+- 单项目操作：支持重试原 Pipeline、最新来源重打 Tag 和部署；重试原 Pipeline 会对已有 build/package job 调用 GitLab retry job API，最新来源重打 Tag 会生成新 tag 并触发新的 pipeline。
 - Job 日志：执行台支持直接查看构建/部署 job trace，并保留跳转 GitLab job 的链接；跳转链接优先使用项目配置里的 GitLab 仓库域名。
 - 发布历史：持久化记录批次、项目、tag、pipeline、操作时间线，并支持清理不再需要的历史发布任务。
 - 用户权限：管理员维护用户、角色、状态和重置密码；内置开发、发布经理、管理员三类角色。
 
 Tag 模板支持 `{prefix}`、`{timestamp}`、`{datetime}`、`{date}`、`{releaseNo}`，其中时间戳按秒生成，格式为 `yyyyMMddHHmmss`。旧模板里的 `{date}` 会兼容为秒级时间戳。
 
-当前 GitLab CI 流程以 tag 触发 pipeline 为准：平台创建 tag 后等待 GitLab 自动生成 pipeline，再查询该 pipeline 的 jobs。批量“打 Tag 构建”按钮不会传 `JOB_NAME`，而是调用 `/api/releases/:id/tag?target=all|backend|frontend&mode=resume`；如果某个项目失败会停止后续项目，再次点击同范围按钮会断点续建。单项目“重新构建”用于失败补发，会对已存在的 build/package job 调用 retry job API。执行台会轮询当前上线单并同步 GitLab jobs，避免自动构建完成后页面仍停留在旧状态。
+当前 GitLab CI 流程以 tag 触发 pipeline 为准：平台创建 tag 后等待 GitLab 自动生成 pipeline，再查询该 pipeline 的 jobs。批量“打 Tag 构建”按钮不会传 `JOB_NAME`，而是调用 `/api/releases/:id/tag?target=all|backend|frontend&mode=resume`；如果某个项目失败会停止后续项目，再次点击同范围按钮会断点续建。若项目来源已修改，断点续建会为该项目生成新 tag，而不是 retry 旧 pipeline。单项目“重试原 Pipeline”用于原 pipeline 补发，“最新来源重打 Tag”用于基于新分支、Tag 或 Commit 触发新 pipeline。执行台会轮询当前上线单并同步 GitLab jobs，避免自动构建完成后页面仍停留在旧状态。
 
 ## 后续建议
 

@@ -70,6 +70,8 @@ func NewRouter(cfg config.Config, db *gorm.DB, releaseService *release.Service) 
 	operator.POST("/releases/:id/package", handler.packageRelease)
 	operator.POST("/releases/:id/deploy", handler.deployRelease)
 	operator.DELETE("/releases/:id", handler.deleteRelease)
+	operator.PUT("/releases/:id/projects/:releaseProjectId/source", handler.updateReleaseProjectSource)
+	operator.POST("/releases/:id/projects/:releaseProjectId/tag", handler.tagReleaseProject)
 	operator.POST("/releases/:id/projects/:releaseProjectId/package", handler.packageReleaseProject)
 	operator.POST("/releases/:id/projects/:releaseProjectId/deploy", handler.deployReleaseProject)
 

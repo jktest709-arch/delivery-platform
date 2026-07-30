@@ -56,8 +56,12 @@ sequenceDiagram
   end
   Web->>API: POST /api/releases/:id/tag?target=all&mode=restart
   API->>DB: 生成新 tag 并清空旧 pipeline/job 状态
+  Web->>API: PUT /api/releases/:id/projects/:releaseProjectId/source
+  API->>DB: 保存最新来源并标记 sourceDirty
   Web->>API: POST /api/releases/:id/projects/:releaseProjectId/package
   API->>GL: retry build/package job
+  Web->>API: POST /api/releases/:id/projects/:releaseProjectId/tag
+  API->>GL: 使用最新来源创建新 tag 并触发 pipeline
   Web->>API: GET /api/releases/:id/projects/:releaseProjectId/jobs/:jobId/trace
   API->>GL: 读取 job trace
   Web->>API: POST /api/releases/:id/deploy
@@ -81,6 +85,8 @@ sequenceDiagram
 | `POST` | `/api/releases/:id/tag?target=all&mode=restart` | 全量重打新 tag 构建 |
 | `POST` | `/api/releases/:id/package?target=all/backend/frontend` | 兼容触发已有 pipeline manual build job |
 | `POST` | `/api/releases/:id/deploy?target=all/backend/frontend` | 一键部署 |
-| `POST` | `/api/releases/:id/projects/:releaseProjectId/package` | 单项目重新构建 |
+| `PUT` | `/api/releases/:id/projects/:releaseProjectId/source` | 保存单项目最新来源 |
+| `POST` | `/api/releases/:id/projects/:releaseProjectId/package` | 单项目重试原 pipeline |
+| `POST` | `/api/releases/:id/projects/:releaseProjectId/tag` | 单项目最新来源重打 tag |
 | `POST` | `/api/releases/:id/projects/:releaseProjectId/deploy` | 单项目部署 |
 | `GET` | `/api/releases/:id/projects/:releaseProjectId/jobs/:jobId/trace` | 查看 job 日志 |

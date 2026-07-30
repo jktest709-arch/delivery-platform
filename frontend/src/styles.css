@@ -498,6 +498,29 @@ tr:last-child td {
   white-space: nowrap;
 }
 
+.source-cell {
+  min-width: 220px;
+}
+
+.source-view,
+.source-editor {
+  display: grid;
+  gap: 6px;
+}
+
+.source-view button {
+  width: fit-content;
+}
+
+.source-editor {
+  min-width: 220px;
+}
+
+.source-editor select,
+.source-editor input {
+  min-width: 0;
+}
+
 .order-cell {
   display: flex;
   min-width: 138px;

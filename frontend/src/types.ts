@@ -60,6 +60,7 @@ export type ReleaseProject = {
   businessLine?: BusinessLine;
   sourceType: SourceType;
   sourceRef: string;
+  sourceDirty: boolean;
   targetTag: string;
   pipelineId: string;
   buildJobId: string;

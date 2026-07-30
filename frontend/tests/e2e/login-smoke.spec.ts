@@ -146,6 +146,7 @@ const releasesPayload = [
         businessLine: projectsPayload[0].businessLine,
         sourceType: "branch",
         sourceRef: "master",
+        sourceDirty: false,
         targetTag: "opsprd-20260729100000-001",
         pipelineId: "",
         buildJobId: "",
@@ -241,7 +242,9 @@ test("admin can log in and visit every main page without runtime errors", async 
   await expect(page.getByRole("button", { name: "前端打 Tag 构建" })).toBeVisible();
   await expect(page.getByRole("button", { name: "全量重打新 Tag 构建" })).toBeVisible();
   await expect(page.getByText("build-image")).toBeVisible();
-  await expect(page.getByRole("button", { name: "重新构建" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "编辑来源" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "重试原 Pipeline" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "最新来源重打 Tag" })).toBeVisible();
   await expect(page.getByText("GitLab").first()).toBeVisible();
 
   await page.getByRole("button", { name: "项目配置" }).click();

@@ -328,6 +328,106 @@ func TestCreateTagsRestartGeneratesNewTag(t *testing.T) {
 	}
 }
 
+func TestUpdateProjectSourceMakesBatchTagUseLatestRef(t *testing.T) {
+	db := newServiceTestDB(t)
+	var applicant model.User
+	if err := db.Where("username = ?", "admin").First(&applicant).Error; err != nil {
+		t.Fatalf("find applicant: %v", err)
+	}
+	client := &fakeGitLabClient{
+		jobs: []gitlab.JobResponse{
+			{ID: "201", Name: "build-image", Stage: "build", Status: "success", WebURL: "https://gitlab/jobs/201"},
+		},
+	}
+	service := NewService(db, client)
+
+	created, err := service.Create(context.Background(), CreateRequest{
+		BusinessLineCode: "ops",
+		ReleaseWindow:    time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC),
+		Projects: []CreateProjectRequest{
+			{ProjectCode: "base-auth", SourceType: "branch", SourceRef: "master"},
+		},
+	}, applicant)
+	if err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+	first, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
+	if err != nil {
+		t.Fatalf("create tags: %v", err)
+	}
+	firstProject := first.Projects[0]
+	firstTag := firstProject.TargetTag
+
+	updated, err := service.UpdateProjectSource(context.Background(), first.ID, firstProject.ID, "commit", "abc123", applicant)
+	if err != nil {
+		t.Fatalf("update source: %v", err)
+	}
+	if !updated.Projects[0].SourceDirty {
+		t.Fatal("sourceDirty = false, want true after source update")
+	}
+	if updated.Projects[0].PipelineID == "" {
+		t.Fatal("pipelineID was cleared after source update; old pipeline should remain retryable")
+	}
+
+	retagged, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
+	if err != nil {
+		t.Fatalf("resume after source update: %v", err)
+	}
+	if len(client.taggedRefs) != 2 || client.taggedRefs[1] != "abc123" {
+		t.Fatalf("tagged refs = %v, want second ref abc123", client.taggedRefs)
+	}
+	if retagged.Projects[0].TargetTag == firstTag {
+		t.Fatalf("target tag = %s, want new tag after source update", retagged.Projects[0].TargetTag)
+	}
+	if retagged.Projects[0].SourceDirty {
+		t.Fatal("sourceDirty = true after retag, want false")
+	}
+}
+
+func TestTagOneUsesLatestProjectSource(t *testing.T) {
+	db := newServiceTestDB(t)
+	var applicant model.User
+	if err := db.Where("username = ?", "admin").First(&applicant).Error; err != nil {
+		t.Fatalf("find applicant: %v", err)
+	}
+	client := &fakeGitLabClient{
+		jobs: []gitlab.JobResponse{
+			{ID: "201", Name: "build-image", Stage: "build", Status: "success", WebURL: "https://gitlab/jobs/201"},
+		},
+	}
+	service := NewService(db, client)
+
+	created, err := service.Create(context.Background(), CreateRequest{
+		BusinessLineCode: "ops",
+		ReleaseWindow:    time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC),
+		Projects: []CreateProjectRequest{
+			{ProjectCode: "base-auth", SourceType: "branch", SourceRef: "master"},
+		},
+	}, applicant)
+	if err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+	tagged, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
+	if err != nil {
+		t.Fatalf("create tags: %v", err)
+	}
+	project := tagged.Projects[0]
+	if _, err := service.UpdateProjectSource(context.Background(), tagged.ID, project.ID, "branch", "hotfix/source", applicant); err != nil {
+		t.Fatalf("update source: %v", err)
+	}
+
+	retagged, err := service.TagOne(context.Background(), tagged.ID, project.ID, applicant)
+	if err != nil {
+		t.Fatalf("tag one: %v", err)
+	}
+	if len(client.taggedRefs) != 2 || client.taggedRefs[1] != "hotfix/source" {
+		t.Fatalf("tagged refs = %v, want second ref hotfix/source", client.taggedRefs)
+	}
+	if retagged.Projects[0].SourceDirty {
+		t.Fatal("sourceDirty = true after tag one, want false")
+	}
+}
+
 func TestBuildOnlyProjectDoesNotRequireDeployJob(t *testing.T) {
 	db := newServiceTestDB(t)
 	var applicant model.User
@@ -432,12 +532,14 @@ type fakeGitLabClient struct {
 	retried        []string
 	taggedProjects []string
 	taggedNames    []string
+	taggedRefs     []string
 	trace          string
 }
 
-func (f *fakeGitLabClient) CreateTag(_ context.Context, projectID string, tagName string, _ string) error {
+func (f *fakeGitLabClient) CreateTag(_ context.Context, projectID string, tagName string, ref string) error {
 	f.taggedProjects = append(f.taggedProjects, projectID)
 	f.taggedNames = append(f.taggedNames, tagName)
+	f.taggedRefs = append(f.taggedRefs, ref)
 	return nil
 }
 

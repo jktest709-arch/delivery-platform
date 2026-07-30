@@ -67,6 +67,11 @@ type businessLineRequest struct {
 	Approver    string `json:"approver"`
 }
 
+type releaseProjectSourceRequest struct {
+	SourceType string `json:"sourceType"`
+	SourceRef  string `json:"sourceRef"`
+}
+
 func (h Handler) health(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
@@ -698,6 +703,37 @@ func (h Handler) packageReleaseProject(c *gin.Context) {
 		return
 	}
 	item, err := h.releaseService.PackageOne(c.Request.Context(), releaseID, releaseProjectID, currentUser(c))
+	writeReleaseResult(c, item, err)
+}
+
+func (h Handler) tagReleaseProject(c *gin.Context) {
+	releaseID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+	releaseProjectID, ok := parseUintParam(c, "releaseProjectId")
+	if !ok {
+		return
+	}
+	item, err := h.releaseService.TagOne(c.Request.Context(), releaseID, releaseProjectID, currentUser(c))
+	writeReleaseResult(c, item, err)
+}
+
+func (h Handler) updateReleaseProjectSource(c *gin.Context) {
+	releaseID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+	releaseProjectID, ok := parseUintParam(c, "releaseProjectId")
+	if !ok {
+		return
+	}
+	var req releaseProjectSourceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
+		return
+	}
+	item, err := h.releaseService.UpdateProjectSource(c.Request.Context(), releaseID, releaseProjectID, req.SourceType, req.SourceRef, currentUser(c))
 	writeReleaseResult(c, item, err)
 }
 

@@ -215,8 +215,70 @@ func (s *Service) PackageOne(ctx context.Context, releaseID uint, releaseProject
 	return s.runOne(ctx, releaseID, releaseProjectID, operator, "rebuild")
 }
 
+func (s *Service) TagOne(ctx context.Context, releaseID uint, releaseProjectID uint, operator model.User) (model.Release, error) {
+	release, err := s.Get(ctx, releaseID)
+	if err != nil {
+		return release, err
+	}
+	target, err := findReleaseProject(release, releaseProjectID)
+	if err != nil {
+		return release, err
+	}
+	target, err = s.resetTagForProject(ctx, release, target)
+	if err != nil {
+		return release, err
+	}
+	if err := s.createTagAndWaitBuild(ctx, target); err != nil {
+		return release, err
+	}
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := s.refreshReleaseStatus(tx, release.ID); err != nil {
+			return err
+		}
+		item := event(release.ID, operator.ID, "retag_single", fmt.Sprintf("已使用最新来源为 %s 重新创建 tag 并触发 GitLab CI。", target.Project.Name))
+		return tx.Create(&item).Error
+	})
+	if err != nil {
+		return release, err
+	}
+	return s.Get(ctx, releaseID)
+}
+
 func (s *Service) DeployOne(ctx context.Context, releaseID uint, releaseProjectID uint, operator model.User) (model.Release, error) {
 	return s.runOne(ctx, releaseID, releaseProjectID, operator, "deploy")
+}
+
+func (s *Service) UpdateProjectSource(ctx context.Context, releaseID uint, releaseProjectID uint, sourceType string, sourceRef string, operator model.User) (model.Release, error) {
+	release, err := s.Get(ctx, releaseID)
+	if err != nil {
+		return release, err
+	}
+	target, err := findReleaseProject(release, releaseProjectID)
+	if err != nil {
+		return release, err
+	}
+	sourceType, sourceRef, err = normalizeSource(sourceType, sourceRef)
+	if err != nil {
+		return release, err
+	}
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		updates := map[string]interface{}{
+			"source_type":  sourceType,
+			"source_ref":   sourceRef,
+			"source_dirty": true,
+		}
+		if err := tx.Model(&model.ReleaseProject{}).
+			Where("id = ? AND release_id = ?", releaseProjectID, releaseID).
+			Updates(updates).Error; err != nil {
+			return err
+		}
+		item := event(release.ID, operator.ID, "update_project_source", fmt.Sprintf("已调整 %s 来源为 %s: %s。", target.Project.Name, sourceLabel(sourceType), sourceRef))
+		return tx.Create(&item).Error
+	})
+	if err != nil {
+		return release, err
+	}
+	return s.Get(ctx, releaseID)
 }
 
 func (s *Service) Get(ctx context.Context, id uint) (model.Release, error) {
@@ -491,6 +553,17 @@ func (s *Service) rebuildJobs(ctx context.Context, tx *gorm.DB, item model.Relea
 }
 
 func (s *Service) createOrResumeTagBuild(ctx context.Context, item model.ReleaseProject) error {
+	if item.SourceDirty {
+		release, err := s.Get(ctx, item.ReleaseID)
+		if err != nil {
+			return err
+		}
+		refreshedItem, err := s.resetTagForProject(ctx, release, item)
+		if err != nil {
+			return err
+		}
+		return s.createTagAndWaitBuild(ctx, refreshedItem)
+	}
 	if batchBuildCompleted(item) {
 		return nil
 	}
@@ -518,6 +591,47 @@ func (s *Service) retryBuildAndWait(ctx context.Context, item model.ReleaseProje
 
 func (s *Service) resetTagsForTarget(ctx context.Context, release model.Release, target string) error {
 	selectedProjects := filterByTarget(release.Projects, target)
+	return s.resetTagProjects(ctx, release, selectedProjects)
+}
+
+func (s *Service) resetTagForProject(ctx context.Context, release model.Release, item model.ReleaseProject) (model.ReleaseProject, error) {
+	nextTag, err := nextRestartTag(item.BusinessLine, releaseNoFromBatchNo(release.BatchNo), time.Now(), item.TargetTag)
+	if err != nil {
+		return item, err
+	}
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("release_project_id = ?", item.ID).Delete(&model.ReleasePipelineJob{}).Error; err != nil {
+			return err
+		}
+		updates := map[string]interface{}{
+			"target_tag":    nextTag,
+			"pipeline_id":   "",
+			"build_job_id":  "",
+			"deploy_job_id": "",
+			"status":        model.ProjectStatusPending,
+			"error_message": "",
+			"source_dirty":  false,
+		}
+		if err := tx.Model(&model.ReleaseProject{}).Where("id = ?", item.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		return s.refreshReleaseStatus(tx, release.ID)
+	})
+	if err != nil {
+		return item, err
+	}
+	item.TargetTag = nextTag
+	item.PipelineID = ""
+	item.BuildJobID = ""
+	item.DeployJobID = ""
+	item.Jobs = nil
+	item.Status = model.ProjectStatusPending
+	item.ErrorMessage = ""
+	item.SourceDirty = false
+	return item, nil
+}
+
+func (s *Service) resetTagProjects(ctx context.Context, release model.Release, selectedProjects []model.ReleaseProject) error {
 	releaseNo := releaseNoFromBatchNo(release.BatchNo)
 	tagTime := time.Now()
 
@@ -537,6 +651,7 @@ func (s *Service) resetTagsForTarget(ctx context.Context, release model.Release,
 				"deploy_job_id": "",
 				"status":        model.ProjectStatusPending,
 				"error_message": "",
+				"source_dirty":  false,
 			}
 			if err := tx.Model(&model.ReleaseProject{}).Where("id = ?", item.ID).Updates(updates).Error; err != nil {
 				return err
@@ -1023,6 +1138,40 @@ func releaseNoFromBatchNo(batchNo string) string {
 		return "001"
 	}
 	return releaseNo
+}
+
+func findReleaseProject(release model.Release, releaseProjectID uint) (model.ReleaseProject, error) {
+	for _, item := range release.Projects {
+		if item.ID == releaseProjectID {
+			return item, nil
+		}
+	}
+	return model.ReleaseProject{}, fmt.Errorf("release project not found")
+}
+
+func normalizeSource(sourceType string, sourceRef string) (string, string, error) {
+	sourceType = strings.TrimSpace(sourceType)
+	sourceRef = strings.TrimSpace(sourceRef)
+	if sourceRef == "" {
+		return "", "", fmt.Errorf("来源分支、tag 或 commit 不能为空")
+	}
+	switch sourceType {
+	case "branch", "tag", "commit":
+		return sourceType, sourceRef, nil
+	default:
+		return "", "", fmt.Errorf("来源类型只能是 branch、tag 或 commit")
+	}
+}
+
+func sourceLabel(sourceType string) string {
+	switch sourceType {
+	case "tag":
+		return "Tag"
+	case "commit":
+		return "Commit"
+	default:
+		return "分支"
+	}
 }
 
 func normalizeTarget(target string) string {

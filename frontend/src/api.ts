@@ -6,6 +6,7 @@ import type {
   ProjectPayload,
   Release,
   ReleaseTarget,
+  SourceType,
   User,
   UserPayload,
 } from "./types";
@@ -155,6 +156,17 @@ export const api = {
   packageProject(releaseId: number, releaseProjectId: number) {
     return request<Release>(`/releases/${releaseId}/projects/${releaseProjectId}/package`, {
       method: "POST",
+    });
+  },
+  tagProject(releaseId: number, releaseProjectId: number) {
+    return request<Release>(`/releases/${releaseId}/projects/${releaseProjectId}/tag`, {
+      method: "POST",
+    });
+  },
+  updateReleaseProjectSource(releaseId: number, releaseProjectId: number, payload: { sourceType: SourceType; sourceRef: string }) {
+    return request<Release>(`/releases/${releaseId}/projects/${releaseProjectId}/source`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
     });
   },
   deployProject(releaseId: number, releaseProjectId: number) {

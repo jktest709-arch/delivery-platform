@@ -148,6 +148,7 @@ const releasesPayload = [
         businessLine: projectsPayload[0].businessLine,
         sourceType: "branch",
         sourceRef: "master",
+        sourceDirty: false,
         targetTag: "opsprd-20260729100000-001",
         pipelineId: "",
         buildJobId: "",
@@ -194,6 +195,7 @@ describe("App", () => {
     vi.stubGlobal("localStorage", createMemoryStorage());
     consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.stubGlobal("fetch", vi.fn(mockFetch));
+    vi.stubGlobal("confirm", vi.fn(() => true));
   });
 
   afterEach(() => {
@@ -231,12 +233,35 @@ describe("App", () => {
     expect(wrapper.text()).toContain("前端打 Tag 构建");
     expect(wrapper.text()).toContain("全量重打新 Tag 构建");
     expect(wrapper.text()).toContain("build-image");
-    expect(wrapper.text()).toContain("重新构建");
+    expect(wrapper.text()).toContain("编辑来源");
+    expect(wrapper.text()).toContain("重试原 Pipeline");
+    expect(wrapper.text()).toContain("最新来源重打 Tag");
     expect(wrapper.text()).toContain("GitLab");
+    await wrapper.findAll("button").find((item) => item.text() === "编辑来源")!.trigger("click");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain("保存来源");
+    const sourceInput = wrapper.findAll("input").find((item) => item.element.value === "master");
+    expect(sourceInput, "missing release project source input").toBeTruthy();
+    await sourceInput!.setValue("hotfix/checkout");
+    await wrapper.findAll("button").find((item) => item.text() === "保存来源")!.trigger("click");
+    await flushPromises();
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/releases/1/projects/1/source"),
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ sourceType: "branch", sourceRef: "hotfix/checkout" }),
+      }),
+    );
     await wrapper.findAll("button").find((item) => item.text() === "后端打 Tag 构建")!.trigger("click");
     await flushPromises();
     expect(fetch).toHaveBeenCalledWith(
       expect.stringContaining("/api/releases/1/tag?target=backend&mode=resume"),
+      expect.objectContaining({ method: "POST" }),
+    );
+    await wrapper.findAll("button").find((item) => item.text() === "最新来源重打 Tag")!.trigger("click");
+    await flushPromises();
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/releases/1/projects/1/tag"),
       expect.objectContaining({ method: "POST" }),
     );
 
@@ -340,6 +365,23 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
   }
   if (method === "POST" && url.includes("/api/releases/1/tag")) {
     return jsonResponse(releasesPayload[0]);
+  }
+  if (method === "POST" && url.includes("/api/releases/1/projects/1/tag")) {
+    return jsonResponse(releasesPayload[0]);
+  }
+  if (method === "PUT" && url.includes("/api/releases/1/projects/1/source")) {
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    return jsonResponse({
+      ...releasesPayload[0],
+      projects: [
+        {
+          ...releasesPayload[0].projects[0],
+          sourceType: body.sourceType,
+          sourceRef: body.sourceRef,
+          sourceDirty: true,
+        },
+      ],
+    });
   }
   if (method === "GET" && url.endsWith("/api/users")) {
     return jsonResponse(usersPayload);

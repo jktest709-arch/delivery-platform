@@ -103,6 +103,8 @@ type DependencyRow = {
 
 const selectedProjectCodes = ref<string[]>([]);
 const sourceForms = reactive<Record<string, SourceForm>>({});
+const releaseProjectSourceDrafts = reactive<Record<number, SourceForm>>({});
+const editingReleaseProjectSourceId = ref<number | null>(null);
 const dependencyText = reactive<Record<string, string>>({});
 const editingUserId = ref<number | null>(null);
 const userDrafts = reactive<Record<number, UserForm>>({});
@@ -517,17 +519,76 @@ async function releaseAction(action: "tag" | "restart" | "deploy", target: Relea
   });
 }
 
-async function projectAction(row: ReleaseProject, action: "package" | "deploy") {
+function releaseProjectSourceDraft(row: ReleaseProject) {
+  if (!releaseProjectSourceDrafts[row.id]) {
+    releaseProjectSourceDrafts[row.id] = {
+      sourceType: row.sourceType,
+      sourceRef: row.sourceRef,
+    };
+  }
+  return releaseProjectSourceDrafts[row.id];
+}
+
+function startReleaseProjectSourceEdit(row: ReleaseProject) {
+  releaseProjectSourceDrafts[row.id] = {
+    sourceType: row.sourceType,
+    sourceRef: row.sourceRef,
+  };
+  editingReleaseProjectSourceId.value = row.id;
+}
+
+function cancelReleaseProjectSourceEdit(rowID: number) {
+  delete releaseProjectSourceDrafts[rowID];
+  if (editingReleaseProjectSourceId.value === rowID) {
+    editingReleaseProjectSourceId.value = null;
+  }
+}
+
+async function saveReleaseProjectSource(row: ReleaseProject) {
   if (!currentRelease.value) {
+    return;
+  }
+  const draft = releaseProjectSourceDraft(row);
+  const sourceRef = draft.sourceRef.trim();
+  if (!sourceRef) {
+    error.value = "来源分支、Tag 或 Commit 不能为空";
+    return;
+  }
+  await run(async () => {
+    const updated = await api.updateReleaseProjectSource(currentRelease.value!.id, row.id, {
+      sourceType: draft.sourceType,
+      sourceRef,
+    });
+    upsertRelease(updated);
+    cancelReleaseProjectSourceEdit(row.id);
+    message.value = `${row.project.name} 来源已保存，下一次打 Tag 构建将使用最新来源`;
+  });
+}
+
+async function projectAction(row: ReleaseProject, action: "retry" | "tag" | "deploy") {
+  if (!currentRelease.value) {
+    return;
+  }
+  if (
+    action === "tag" &&
+    !window.confirm(`确认使用 ${row.project.name} 的最新来源重新打 Tag 并触发 GitLab CI？`)
+  ) {
     return;
   }
   await run(async () => {
     const updated =
-      action === "package"
+      action === "retry"
         ? await api.packageProject(currentRelease.value!.id, row.id)
-        : await api.deployProject(currentRelease.value!.id, row.id);
+        : action === "tag"
+          ? await api.tagProject(currentRelease.value!.id, row.id)
+          : await api.deployProject(currentRelease.value!.id, row.id);
     upsertRelease(updated);
-    message.value = `${row.project.name} 已触发${action === "package" ? "重新构建" : "部署"}`;
+    message.value =
+      action === "retry"
+        ? `${row.project.name} 已触发原 Pipeline 重试`
+        : action === "tag"
+          ? `${row.project.name} 已使用最新来源重新打 Tag 构建`
+          : `${row.project.name} 已触发部署`;
   });
 }
 
@@ -1488,14 +1549,45 @@ function statusLabel(status: string) {
                     <strong>{{ row.project.name }}</strong>
                     <small>{{ kindText[row.project.kind] }} / {{ releaseBusinessLineName(row) }} / {{ row.project.owner }}</small>
                   </td>
-                  <td>{{ sourceText[row.sourceType] }}: {{ row.sourceRef }}</td>
+                  <td class="source-cell">
+                    <template v-if="editingReleaseProjectSourceId === row.id">
+                      <div class="source-editor">
+                        <select v-model="releaseProjectSourceDraft(row).sourceType">
+                          <option value="branch">分支</option>
+                          <option value="tag">Tag</option>
+                          <option value="commit">Commit</option>
+                        </select>
+                        <input v-model="releaseProjectSourceDraft(row).sourceRef" />
+                        <div class="inline-actions">
+                          <button class="primary" :disabled="!canOperate || loading" @click="saveReleaseProjectSource(row)">
+                            保存来源
+                          </button>
+                          <button :disabled="loading" @click="cancelReleaseProjectSourceEdit(row.id)">取消</button>
+                        </div>
+                      </div>
+                    </template>
+                    <template v-else>
+                      <div class="source-view">
+                        <span>{{ sourceText[row.sourceType] }}: {{ row.sourceRef }}</span>
+                        <small v-if="row.sourceDirty">来源已修改，下一次打 Tag 构建会生成新 Tag</small>
+                        <button :disabled="!canOperate || loading" @click="startReleaseProjectSourceEdit(row)">
+                          编辑来源
+                        </button>
+                      </div>
+                    </template>
+                  </td>
                   <td><code>{{ row.targetTag }}</code></td>
                   <td>{{ row.pipelineId || "-" }}</td>
                   <td>
                     <span class="status" :class="row.status">{{ statusLabel(row.status) }}</span>
                   </td>
                   <td class="inline-actions">
-                    <button :disabled="!canOperate || loading" @click="projectAction(row, 'package')">重新构建</button>
+                    <button :disabled="!canOperate || loading || !row.pipelineId" @click="projectAction(row, 'retry')">
+                      重试原 Pipeline
+                    </button>
+                    <button :disabled="!canOperate || loading" @click="projectAction(row, 'tag')">
+                      最新来源重打 Tag
+                    </button>
                     <button v-if="hasDeployJobs(row)" :disabled="!canOperate || loading" @click="projectAction(row, 'deploy')">
                       部署
                     </button>

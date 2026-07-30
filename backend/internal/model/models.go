@@ -118,6 +118,7 @@ type ReleaseProject struct {
 	BusinessLine   BusinessLine         `json:"businessLine"`
 	SourceType     string               `json:"sourceType" gorm:"size:32;not null"`
 	SourceRef      string               `json:"sourceRef" gorm:"size:255;not null"`
+	SourceDirty    bool                 `json:"sourceDirty" gorm:"default:false"`
 	TargetTag      string               `json:"targetTag" gorm:"size:128;not null"`
 	PipelineID     string               `json:"pipelineId" gorm:"size:64"`
 	BuildJobID     string               `json:"buildJobId" gorm:"size:64"`
