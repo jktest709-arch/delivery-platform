@@ -226,7 +226,10 @@ test("admin can log in and visit every main page without runtime errors", async 
   await page.getByRole("button", { name: "登录" }).click();
 
   await expect(page.getByRole("heading", { name: "上线单申请" })).toBeVisible();
-  await expect(page.getByText("统一认证中心")).toBeVisible();
+  await expect(page.getByText("统一认证中心").first()).toBeVisible();
+  await expect(page.getByText("从历史上线单复制")).toBeVisible();
+  await expect(page.getByRole("button", { name: "复制到当前申请" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "上线单预览" })).toBeVisible();
 
   for (const tab of ["构建执行台", "项目配置", "Tag 与依赖", "发布历史", "用户权限", "上线单申请"]) {
     await page.getByRole("button", { name: tab }).click();

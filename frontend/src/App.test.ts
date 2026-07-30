@@ -213,6 +213,16 @@ describe("App", () => {
     expect(wrapper.text()).toContain("统一认证中心");
     expect(wrapper.text()).toContain("上线单申请");
     expect(wrapper.text()).toContain("发布业务线");
+    expect(wrapper.text()).toContain("从历史上线单复制");
+    expect(wrapper.text()).toContain("上线单预览");
+    expect(wrapper.text()).toContain("复制到当前申请");
+
+    const historySelect = wrapper.findAll("select").find((item) => item.text().includes("PRD-20260729-001"));
+    expect(historySelect, "missing history release import selector").toBeTruthy();
+    await historySelect!.setValue("1");
+    await wrapper.findAll("button").find((item) => item.text() === "复制到当前申请")!.trigger("click");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain("已从 PRD-20260729-001 复制 1 个项目到申请草稿");
 
     for (const tab of ["构建执行台", "项目配置", "Tag 与依赖", "发布历史", "上线单申请"]) {
       const button = wrapper.findAll("button").find((item) => item.text() === tab);

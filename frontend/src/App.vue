@@ -102,6 +102,7 @@ type DependencyRow = {
 };
 
 const selectedProjectCodes = ref<string[]>([]);
+const importReleaseId = ref(0);
 const sourceForms = reactive<Record<string, SourceForm>>({});
 const releaseProjectSourceDrafts = reactive<Record<number, SourceForm>>({});
 const editingReleaseProjectSourceId = ref<number | null>(null);
@@ -223,6 +224,13 @@ const selectedBackendCount = computed(() => {
 
 const selectedFrontendCount = computed(() => {
   return selectedProjects.value.filter((project) => project.kind === "frontend").length;
+});
+
+const releasePreviewRows = computed(() => {
+  return selectedProjects.value.map((project) => ({
+    project,
+    source: projectSourceForm(project),
+  }));
 });
 
 const currentReleaseHasDeployJobs = computed(() => {
@@ -477,6 +485,39 @@ function toggleProject(code: string) {
     return;
   }
   selectedProjectCodes.value = [...selectedProjectCodes.value, code];
+}
+
+function importReleaseDraft() {
+  const sourceRelease = releases.value.find((item) => item.id === importReleaseId.value);
+  if (!sourceRelease) {
+    error.value = "请选择要复制的历史上线单";
+    return;
+  }
+  const lineCode = sourceRelease.businessLine?.code || releaseForm.businessLineCode;
+  releaseForm.businessLineCode = lineCode;
+  releaseForm.releaseWindow = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 16);
+  releaseForm.remark = sourceRelease.remark ? `复制 ${sourceRelease.batchNo}: ${sourceRelease.remark}` : `复制 ${sourceRelease.batchNo}`;
+
+  const projectByCode = new Map(orderedProjects.value.map((project) => [project.code, project]));
+  const importedCodes = new Set<string>();
+  for (const row of sourceRelease.projects) {
+    const project = projectByCode.get(row.project.code);
+    if (!project) {
+      continue;
+    }
+    if (lineCode && !projectBusinessLineCodes(project).includes(lineCode)) {
+      continue;
+    }
+    importedCodes.add(project.code);
+    sourceForms[project.code] = {
+      sourceType: row.sourceType,
+      sourceRef: row.sourceRef,
+    };
+  }
+
+  selectedProjectCodes.value = orderedProjects.value.filter((project) => importedCodes.has(project.code)).map((project) => project.code);
+  error.value = "";
+  message.value = `已从 ${sourceRelease.batchNo} 复制 ${selectedProjectCodes.value.length} 个项目到申请草稿`;
 }
 
 async function submitRelease() {
@@ -1356,6 +1397,19 @@ function statusLabel(status: string) {
           </label>
         </div>
 
+        <div class="apply-tools">
+          <label>
+            <span>从历史上线单复制</span>
+            <select v-model.number="importReleaseId">
+              <option :value="0">选择历史上线单</option>
+              <option v-for="item in releases" :key="item.id" :value="item.id">
+                {{ item.batchNo }} / {{ item.businessLine?.name || "-" }} / {{ formatDate(item.createdAt) }}
+              </option>
+            </select>
+          </label>
+          <button :disabled="loading || importReleaseId === 0" @click="importReleaseDraft">复制到当前申请</button>
+        </div>
+
         <div class="table-wrap">
           <table>
             <thead>
@@ -1394,6 +1448,48 @@ function statusLabel(status: string) {
                 </td>
                 <td>
                   <input v-model="projectSourceForm(project).sourceRef" />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="section-head compact-head">
+          <h2>上线单预览</h2>
+          <div class="counter">
+            <span>{{ releasePreviewRows.length }} 个项目</span>
+          </div>
+        </div>
+
+        <div class="table-wrap preview-table">
+          <table>
+            <thead>
+              <tr>
+                <th>顺序</th>
+                <th>项目</th>
+                <th>类型</th>
+                <th>业务线</th>
+                <th>代码来源</th>
+                <th>分支 / Tag / Commit</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="releasePreviewRows.length === 0">
+                <td colspan="7">尚未选择项目</td>
+              </tr>
+              <tr v-for="row in releasePreviewRows" :key="row.project.code">
+                <td>{{ row.project.sortOrder }}</td>
+                <td>
+                  <strong>{{ row.project.name }}</strong>
+                  <small>{{ row.project.gitlabProjectId }}</small>
+                </td>
+                <td>{{ kindText[row.project.kind] }}</td>
+                <td>{{ projectBusinessLineNames(row.project) }}</td>
+                <td>{{ sourceText[row.source.sourceType] }}</td>
+                <td><code>{{ row.source.sourceRef }}</code></td>
+                <td>
+                  <button :disabled="loading" @click="toggleProject(row.project.code)">移除</button>
                 </td>
               </tr>
             </tbody>
