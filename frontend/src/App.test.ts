@@ -230,6 +230,9 @@ describe("App", () => {
       await button!.trigger("click");
       await wrapper.vm.$nextTick();
       expect(wrapper.text()).toContain(tab);
+      if (tab === "构建执行台") {
+        expect(wrapper.text()).not.toContain("已从 PRD-20260729-001 复制 1 个项目到申请草稿");
+      }
     }
 
     await wrapper.findAll("button").find((item) => item.text() === "构建执行台")!.trigger("click");

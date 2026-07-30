@@ -237,10 +237,22 @@ const currentReleaseHasDeployJobs = computed(() => {
   return currentRelease.value?.projects.some((row) => hasDeployJobs(row)) ?? false;
 });
 
+let messageClearTimer: number | null = null;
+
 watch(
   () => releaseForm.businessLineCode,
   () => syncSelectedProjectsForReleaseLine(),
 );
+
+watch(message, (value) => {
+  clearMessageTimer();
+  if (value) {
+    messageClearTimer = window.setTimeout(() => {
+      message.value = "";
+      messageClearTimer = null;
+    }, 5000);
+  }
+});
 
 let releaseRefreshTimer: number | null = null;
 
@@ -263,7 +275,29 @@ onBeforeUnmount(() => {
   if (releaseRefreshTimer) {
     window.clearInterval(releaseRefreshTimer);
   }
+  clearMessageTimer();
 });
+
+function clearMessageTimer() {
+  if (messageClearTimer) {
+    window.clearTimeout(messageClearTimer);
+    messageClearTimer = null;
+  }
+}
+
+function clearNotices() {
+  clearMessageTimer();
+  message.value = "";
+  error.value = "";
+}
+
+function switchTab(tabKey: string) {
+  if (activeTab.value === tabKey) {
+    return;
+  }
+  clearNotices();
+  activeTab.value = tabKey;
+}
 
 async function login() {
   await run(async () => {
@@ -1348,7 +1382,7 @@ function statusLabel(status: string) {
         v-for="tab in visibleTabs"
         :key="tab.key"
         :class="{ active: activeTab === tab.key }"
-        @click="activeTab = tab.key"
+        @click="switchTab(tab.key)"
       >
         {{ tab.label }}
       </button>
