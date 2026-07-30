@@ -62,7 +62,7 @@ func TestTagSyncsPipelineJobsAndPackagePlaysBuildJob(t *testing.T) {
 		t.Fatalf("create release: %v", err)
 	}
 
-	tagged, err := service.CreateTags(context.Background(), created.ID, applicant)
+	tagged, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
 	if err != nil {
 		t.Fatalf("create tags: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestCreateTagsWaitsForAutoBuildBeforeNextProject(t *testing.T) {
 		t.Fatalf("create release: %v", err)
 	}
 
-	tagged, err := service.CreateTags(context.Background(), created.ID, applicant)
+	tagged, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
 	if err != nil {
 		t.Fatalf("create tags: %v", err)
 	}
@@ -172,6 +172,159 @@ func TestCreateTagsWaitsForAutoBuildBeforeNextProject(t *testing.T) {
 		if project.Status != model.ProjectStatusBuildSuccess {
 			t.Fatalf("%s status = %s, want build_success", project.Project.Code, project.Status)
 		}
+	}
+}
+
+func TestCreateTagsCanTargetFrontendProjectsOnly(t *testing.T) {
+	db := newServiceTestDB(t)
+	var applicant model.User
+	if err := db.Where("username = ?", "admin").First(&applicant).Error; err != nil {
+		t.Fatalf("find applicant: %v", err)
+	}
+	client := &fakeGitLabClient{
+		jobsByProject: map[string][][]gitlab.JobResponse{
+			"delivery/reporting": {
+				{{ID: "701", Name: "build-web", Stage: "build", Status: "success", WebURL: "https://gitlab/jobs/701"}},
+			},
+		},
+	}
+	service := NewService(db, client)
+
+	created, err := service.Create(context.Background(), CreateRequest{
+		ReleaseWindow: time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC),
+		Projects: []CreateProjectRequest{
+			{ProjectCode: "base-auth", BusinessLineCode: "ops", SourceType: "branch", SourceRef: "master"},
+			{ProjectCode: "reporting", BusinessLineCode: "ops", SourceType: "branch", SourceRef: "main"},
+		},
+	}, applicant)
+	if err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+
+	updated, err := service.CreateTags(context.Background(), created.ID, model.ProjectKindFrontend, "resume", applicant)
+	if err != nil {
+		t.Fatalf("create frontend tags: %v", err)
+	}
+	if len(client.taggedProjects) != 1 || client.taggedProjects[0] != "delivery/reporting" {
+		t.Fatalf("tagged projects = %v, want frontend project only", client.taggedProjects)
+	}
+	for _, project := range updated.Projects {
+		if project.Project.Code == "base-auth" && project.Status != model.ProjectStatusPending {
+			t.Fatalf("base-auth status = %s, want pending", project.Status)
+		}
+		if project.Project.Code == "reporting" && project.Status != model.ProjectStatusBuildSuccess {
+			t.Fatalf("reporting status = %s, want build_success", project.Status)
+		}
+	}
+}
+
+func TestCreateTagsResumeRetriesFailedProjectThenContinues(t *testing.T) {
+	oldInterval := autoBuildPollInterval
+	oldAttempts := autoBuildPollAttempts
+	autoBuildPollInterval = time.Millisecond
+	autoBuildPollAttempts = 5
+	defer func() {
+		autoBuildPollInterval = oldInterval
+		autoBuildPollAttempts = oldAttempts
+	}()
+
+	db := newServiceTestDB(t)
+	var applicant model.User
+	if err := db.Where("username = ?", "admin").First(&applicant).Error; err != nil {
+		t.Fatalf("find applicant: %v", err)
+	}
+	client := &fakeGitLabClient{
+		jobsByProject: map[string][][]gitlab.JobResponse{
+			"delivery/base-auth": {
+				{{ID: "201", Name: "build-image", Stage: "build", Status: "failed", WebURL: "https://gitlab/jobs/201"}},
+				{{ID: "201", Name: "build-image", Stage: "build", Status: "failed", WebURL: "https://gitlab/jobs/201"}},
+				{{ID: "201", Name: "build-image", Stage: "build", Status: "failed", WebURL: "https://gitlab/jobs/201"}},
+				{{ID: "202", Name: "build-image", Stage: "build", Status: "running", WebURL: "https://gitlab/jobs/202"}},
+				{{ID: "202", Name: "build-image", Stage: "build", Status: "success", WebURL: "https://gitlab/jobs/202"}},
+			},
+			"delivery/order-core": {
+				{{ID: "301", Name: "build-image", Stage: "build", Status: "success", WebURL: "https://gitlab/jobs/301"}},
+			},
+		},
+	}
+	service := NewService(db, client)
+
+	created, err := service.Create(context.Background(), CreateRequest{
+		ReleaseWindow: time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC),
+		Projects: []CreateProjectRequest{
+			{ProjectCode: "base-auth", BusinessLineCode: "ops", SourceType: "branch", SourceRef: "master"},
+			{ProjectCode: "order-core", BusinessLineCode: "aa", SourceType: "branch", SourceRef: "master"},
+		},
+	}, applicant)
+	if err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+
+	if _, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant); err == nil {
+		t.Fatal("create tags succeeded unexpectedly with failed base-auth build")
+	}
+	if len(client.taggedProjects) != 1 || client.taggedProjects[0] != "delivery/base-auth" {
+		t.Fatalf("first tagged projects = %v, want base-auth only", client.taggedProjects)
+	}
+
+	updated, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
+	if err != nil {
+		t.Fatalf("resume tags: %v", err)
+	}
+	if len(client.retried) != 1 || client.retried[0] != "201" {
+		t.Fatalf("retried jobs = %v, want [201]", client.retried)
+	}
+	if len(client.taggedProjects) != 2 || client.taggedProjects[1] != "delivery/order-core" {
+		t.Fatalf("tagged projects after resume = %v, want order-core continuation", client.taggedProjects)
+	}
+	for _, project := range updated.Projects {
+		if project.Status != model.ProjectStatusBuildSuccess {
+			t.Fatalf("%s status = %s, want build_success", project.Project.Code, project.Status)
+		}
+	}
+}
+
+func TestCreateTagsRestartGeneratesNewTag(t *testing.T) {
+	db := newServiceTestDB(t)
+	var applicant model.User
+	if err := db.Where("username = ?", "admin").First(&applicant).Error; err != nil {
+		t.Fatalf("find applicant: %v", err)
+	}
+	client := &fakeGitLabClient{
+		jobs: []gitlab.JobResponse{
+			{ID: "201", Name: "build-image", Stage: "build", Status: "success", WebURL: "https://gitlab/jobs/201"},
+		},
+	}
+	service := NewService(db, client)
+
+	created, err := service.Create(context.Background(), CreateRequest{
+		BusinessLineCode: "ops",
+		ReleaseWindow:    time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC),
+		Projects: []CreateProjectRequest{
+			{ProjectCode: "base-auth", SourceType: "branch", SourceRef: "master"},
+		},
+	}, applicant)
+	if err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+	first, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
+	if err != nil {
+		t.Fatalf("create tags: %v", err)
+	}
+	firstTag := first.Projects[0].TargetTag
+
+	restarted, err := service.CreateTags(context.Background(), created.ID, "all", "restart", applicant)
+	if err != nil {
+		t.Fatalf("restart tags: %v", err)
+	}
+	if len(client.taggedNames) != 2 {
+		t.Fatalf("tagged names = %v, want two tag creations", client.taggedNames)
+	}
+	if restarted.Projects[0].TargetTag == firstTag {
+		t.Fatalf("restart target tag = %s, want a new tag", restarted.Projects[0].TargetTag)
+	}
+	if client.taggedNames[0] == client.taggedNames[1] {
+		t.Fatalf("created tag names are equal: %v", client.taggedNames)
 	}
 }
 
@@ -199,7 +352,7 @@ func TestBuildOnlyProjectDoesNotRequireDeployJob(t *testing.T) {
 		t.Fatalf("create release: %v", err)
 	}
 
-	tagged, err := service.CreateTags(context.Background(), created.ID, applicant)
+	tagged, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
 	if err != nil {
 		t.Fatalf("create tags: %v", err)
 	}
@@ -236,7 +389,7 @@ func TestPackageOneRetriesLatestBuildJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create release: %v", err)
 	}
-	tagged, err := service.CreateTags(context.Background(), created.ID, applicant)
+	tagged, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
 	if err == nil {
 		t.Fatal("create tags succeeded unexpectedly with failed auto build")
 	}
@@ -278,11 +431,13 @@ type fakeGitLabClient struct {
 	played         []string
 	retried        []string
 	taggedProjects []string
+	taggedNames    []string
 	trace          string
 }
 
-func (f *fakeGitLabClient) CreateTag(_ context.Context, projectID string, _ string, _ string) error {
+func (f *fakeGitLabClient) CreateTag(_ context.Context, projectID string, tagName string, _ string) error {
 	f.taggedProjects = append(f.taggedProjects, projectID)
+	f.taggedNames = append(f.taggedNames, tagName)
 	return nil
 }
 

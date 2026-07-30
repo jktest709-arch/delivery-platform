@@ -46,7 +46,7 @@ sequenceDiagram
   Dev->>Web: 选择本次业务线、项目和分支/tag/commit
   Web->>API: POST /api/releases
   API->>DB: 创建上线单和项目快照
-  Web->>API: POST /api/releases/:id/tag
+  Web->>API: POST /api/releases/:id/tag?target=backend&mode=resume
   loop 按依赖顺序逐个项目
     API->>GL: 创建项目 tag
     API->>GL: 按 tag 查询 pipeline，读取 jobs
@@ -54,8 +54,8 @@ sequenceDiagram
     API->>GL: 轮询 build/package jobs
     API->>DB: 构建完成后同步最终状态
   end
-  Web->>API: POST /api/releases/:id/package?target=backend
-  API->>GL: play build/package manual job
+  Web->>API: POST /api/releases/:id/tag?target=all&mode=restart
+  API->>DB: 生成新 tag 并清空旧 pipeline/job 状态
   Web->>API: POST /api/releases/:id/projects/:releaseProjectId/package
   API->>GL: retry build/package job
   Web->>API: GET /api/releases/:id/projects/:releaseProjectId/jobs/:jobId/trace
@@ -77,8 +77,9 @@ sequenceDiagram
 | `PUT` | `/api/dependencies/:code` | 保存项目依赖 |
 | `POST` | `/api/releases` | 提交上线单 |
 | `GET` | `/api/releases` | 发布历史 |
-| `POST` | `/api/releases/:id/tag` | 统一打 tag |
-| `POST` | `/api/releases/:id/package?target=all/backend/frontend` | 一键构建 |
+| `POST` | `/api/releases/:id/tag?target=all/backend/frontend&mode=resume` | 范围打 tag 构建，支持断点续建 |
+| `POST` | `/api/releases/:id/tag?target=all&mode=restart` | 全量重打新 tag 构建 |
+| `POST` | `/api/releases/:id/package?target=all/backend/frontend` | 兼容触发已有 pipeline manual build job |
 | `POST` | `/api/releases/:id/deploy?target=all/backend/frontend` | 一键部署 |
 | `POST` | `/api/releases/:id/projects/:releaseProjectId/package` | 单项目重新构建 |
 | `POST` | `/api/releases/:id/projects/:releaseProjectId/deploy` | 单项目部署 |

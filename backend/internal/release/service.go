@@ -156,14 +156,30 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 	return s.Get(ctx, created.ID)
 }
 
-func (s *Service) CreateTags(ctx context.Context, releaseID uint, operator model.User) (model.Release, error) {
+func (s *Service) CreateTags(ctx context.Context, releaseID uint, target string, mode string, operator model.User) (model.Release, error) {
 	release, err := s.Get(ctx, releaseID)
 	if err != nil {
 		return release, err
 	}
 
-	for _, item := range release.Projects {
-		if err := s.createTagAndWaitBuild(ctx, item); err != nil {
+	target = normalizeTarget(target)
+	selectedProjects := filterByTarget(release.Projects, target)
+	if len(selectedProjects) == 0 {
+		return release, fmt.Errorf("没有匹配的%s项目", targetLabel(target))
+	}
+	if mode == "restart" {
+		if err := s.resetTagsForTarget(ctx, release, target); err != nil {
+			return release, err
+		}
+		release, err = s.Get(ctx, releaseID)
+		if err != nil {
+			return release, err
+		}
+		selectedProjects = filterByTarget(release.Projects, target)
+	}
+
+	for _, item := range selectedProjects {
+		if err := s.createOrResumeTagBuild(ctx, item); err != nil {
 			return release, err
 		}
 	}
@@ -172,7 +188,13 @@ func (s *Service) CreateTags(ctx context.Context, releaseID uint, operator model
 		if err := s.refreshReleaseStatus(tx, release.ID); err != nil {
 			return err
 		}
-		item := event(release.ID, operator.ID, "create_tags", "已按依赖顺序创建 tag，并同步 GitLab pipeline/jobs。")
+		action := "create_tags_" + target
+		message := fmt.Sprintf("已按依赖顺序创建%s项目 tag，并同步 GitLab pipeline/jobs。", targetLabel(target))
+		if mode == "restart" {
+			action = "restart_tags_" + target
+			message = fmt.Sprintf("已重置并重新创建%s项目 tag，按依赖顺序触发 GitLab CI 构建。", targetLabel(target))
+		}
+		item := event(release.ID, operator.ID, action, message)
 		return tx.Create(&item).Error
 	})
 	if err != nil {
@@ -466,6 +488,62 @@ func (s *Service) rebuildJobs(ctx context.Context, tx *gorm.DB, item model.Relea
 		return s.markActionFailed(tx, item.ID, "rebuild", err)
 	}
 	return s.updateReleaseProjectFromJobs(tx, item.ID, item.PipelineID, refreshedJobs, "")
+}
+
+func (s *Service) createOrResumeTagBuild(ctx context.Context, item model.ReleaseProject) error {
+	if batchBuildCompleted(item) {
+		return nil
+	}
+	if item.Status == model.ProjectStatusBuildFailed && item.PipelineID != "" {
+		return s.retryBuildAndWait(ctx, item)
+	}
+	return s.createTagAndWaitBuild(ctx, item)
+}
+
+func batchBuildCompleted(item model.ReleaseProject) bool {
+	switch item.Status {
+	case model.ProjectStatusBuildSuccess, model.ProjectStatusDeploying, model.ProjectStatusDeploySuccess:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) retryBuildAndWait(ctx context.Context, item model.ReleaseProject) error {
+	if err := s.playJobs(ctx, s.db.WithContext(ctx), item, "rebuild"); err != nil {
+		return err
+	}
+	return s.waitForAutoBuild(ctx, item, item.PipelineID)
+}
+
+func (s *Service) resetTagsForTarget(ctx context.Context, release model.Release, target string) error {
+	selectedProjects := filterByTarget(release.Projects, target)
+	releaseNo := releaseNoFromBatchNo(release.BatchNo)
+	tagTime := time.Now()
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		for _, item := range selectedProjects {
+			nextTag, err := nextRestartTag(item.BusinessLine, releaseNo, tagTime, item.TargetTag)
+			if err != nil {
+				return err
+			}
+			if err := tx.Where("release_project_id = ?", item.ID).Delete(&model.ReleasePipelineJob{}).Error; err != nil {
+				return err
+			}
+			updates := map[string]interface{}{
+				"target_tag":    nextTag,
+				"pipeline_id":   "",
+				"build_job_id":  "",
+				"deploy_job_id": "",
+				"status":        model.ProjectStatusPending,
+				"error_message": "",
+			}
+			if err := tx.Model(&model.ReleaseProject{}).Where("id = ?", item.ID).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+		return s.refreshReleaseStatus(tx, release.ID)
+	})
 }
 
 func (s *Service) createTagAndWaitBuild(ctx context.Context, item model.ReleaseProject) error {
@@ -925,7 +1003,51 @@ func renderTagAt(line model.BusinessLine, releaseNo string, timestamp time.Time)
 	return value
 }
 
+func nextRestartTag(line model.BusinessLine, releaseNo string, tagTime time.Time, currentTag string) (string, error) {
+	for offset := 0; offset < 10; offset++ {
+		tag := renderTagAt(line, releaseNo, tagTime.Add(time.Duration(offset)*time.Second))
+		if tag != "" && tag != currentTag {
+			return tag, nil
+		}
+	}
+	return "", fmt.Errorf("无法为业务线 %s 生成新的 tag，请确认 tag 模板包含 {timestamp}、{datetime} 或 {date}", line.Code)
+}
+
+func releaseNoFromBatchNo(batchNo string) string {
+	parts := strings.Split(strings.TrimSpace(batchNo), "-")
+	if len(parts) == 0 {
+		return "001"
+	}
+	releaseNo := strings.TrimSpace(parts[len(parts)-1])
+	if releaseNo == "" {
+		return "001"
+	}
+	return releaseNo
+}
+
+func normalizeTarget(target string) string {
+	target = strings.TrimSpace(target)
+	switch target {
+	case model.ProjectKindBackend, model.ProjectKindFrontend:
+		return target
+	default:
+		return "all"
+	}
+}
+
+func targetLabel(target string) string {
+	switch target {
+	case model.ProjectKindBackend:
+		return "后端"
+	case model.ProjectKindFrontend:
+		return "前端"
+	default:
+		return "全量"
+	}
+}
+
 func filterByTarget(projects []model.ReleaseProject, target string) []model.ReleaseProject {
+	target = normalizeTarget(target)
 	if target == "" || target == "all" {
 		return projects
 	}

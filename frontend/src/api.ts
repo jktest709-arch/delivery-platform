@@ -139,8 +139,8 @@ export const api = {
   deleteRelease(id: number) {
     return request<Release[]>(`/releases/${id}`, { method: "DELETE" });
   },
-  createTags(id: number) {
-    return request<Release>(`/releases/${id}/tag`, { method: "POST" });
+  createTags(id: number, target: ReleaseTarget = "all", mode: "resume" | "restart" = "resume") {
+    return request<Release>(`/releases/${id}/tag?target=${target}&mode=${mode}`, { method: "POST" });
   },
   packageRelease(id: number, target: ReleaseTarget) {
     return request<Release>(`/releases/${id}/package?target=${target}`, {

@@ -500,17 +500,18 @@ async function submitRelease() {
   });
 }
 
-async function releaseAction(action: "tag" | "package" | "deploy", target: ReleaseTarget = "all") {
+async function releaseAction(action: "tag" | "restart" | "deploy", target: ReleaseTarget = "all") {
   if (!currentRelease.value) {
+    return;
+  }
+  if (action === "restart" && !window.confirm("确认全量重新打 Tag 并从头触发构建？这会为所有项目生成新的生产 tag。")) {
     return;
   }
   await run(async () => {
     const updated =
-      action === "tag"
-        ? await api.createTags(currentRelease.value!.id)
-        : action === "package"
-          ? await api.packageRelease(currentRelease.value!.id, target)
-          : await api.deployRelease(currentRelease.value!.id, target);
+      action === "deploy"
+        ? await api.deployRelease(currentRelease.value!.id, target)
+        : await api.createTags(currentRelease.value!.id, target, action === "restart" ? "restart" : "resume");
     upsertRelease(updated);
     message.value = `${updated.batchNo} 已更新`;
   });
@@ -1449,10 +1450,14 @@ function statusLabel(status: string) {
           </div>
 
           <div class="actions split">
-            <button :disabled="!canOperate || loading" @click="releaseAction('tag')">统一打 Tag</button>
-            <button :disabled="!canOperate || loading" @click="releaseAction('package', 'all')">全量构建</button>
-            <button :disabled="!canOperate || loading" @click="releaseAction('package', 'backend')">后端构建</button>
-            <button :disabled="!canOperate || loading" @click="releaseAction('package', 'frontend')">前端构建</button>
+            <button :disabled="!canOperate || loading" @click="releaseAction('tag', 'all')">全量打 Tag 构建</button>
+            <button :disabled="!canOperate || loading" @click="releaseAction('tag', 'backend')">后端打 Tag 构建</button>
+            <button :disabled="!canOperate || loading" @click="releaseAction('tag', 'frontend')">
+              前端打 Tag 构建
+            </button>
+            <button class="danger-button" :disabled="!canOperate || loading" @click="releaseAction('restart', 'all')">
+              全量重打新 Tag 构建
+            </button>
             <button
               v-if="currentReleaseHasDeployJobs"
               class="primary"

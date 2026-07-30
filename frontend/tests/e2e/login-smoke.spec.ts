@@ -236,6 +236,10 @@ test("admin can log in and visit every main page without runtime errors", async 
   await expect(page.getByRole("button", { name: "删除任务" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Pipeline 流程" })).toBeVisible();
   await expect(page.getByText("GitLab Tags API")).toBeVisible();
+  await expect(page.getByRole("button", { name: "全量打 Tag 构建" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "后端打 Tag 构建" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "前端打 Tag 构建" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "全量重打新 Tag 构建" })).toBeVisible();
   await expect(page.getByText("build-image")).toBeVisible();
   await expect(page.getByRole("button", { name: "重新构建" })).toBeVisible();
   await expect(page.getByText("GitLab").first()).toBeVisible();

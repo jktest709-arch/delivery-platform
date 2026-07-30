@@ -226,9 +226,19 @@ describe("App", () => {
     expect(wrapper.text()).toContain("Pipeline 流程");
     expect(wrapper.text()).toContain("GitLab Tags API");
     expect(wrapper.text()).toContain("构建 Jobs");
+    expect(wrapper.text()).toContain("全量打 Tag 构建");
+    expect(wrapper.text()).toContain("后端打 Tag 构建");
+    expect(wrapper.text()).toContain("前端打 Tag 构建");
+    expect(wrapper.text()).toContain("全量重打新 Tag 构建");
     expect(wrapper.text()).toContain("build-image");
     expect(wrapper.text()).toContain("重新构建");
     expect(wrapper.text()).toContain("GitLab");
+    await wrapper.findAll("button").find((item) => item.text() === "后端打 Tag 构建")!.trigger("click");
+    await flushPromises();
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/api/releases/1/tag?target=backend&mode=resume"),
+      expect.objectContaining({ method: "POST" }),
+    );
 
     await wrapper.findAll("button").find((item) => item.text() === "项目配置")!.trigger("click");
     expect(wrapper.text()).toContain("新增项目");
@@ -327,6 +337,9 @@ async function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
   }
   if (method === "GET" && url.endsWith("/api/releases")) {
     return jsonResponse(releasesPayload);
+  }
+  if (method === "POST" && url.includes("/api/releases/1/tag")) {
+    return jsonResponse(releasesPayload[0]);
   }
   if (method === "GET" && url.endsWith("/api/users")) {
     return jsonResponse(usersPayload);

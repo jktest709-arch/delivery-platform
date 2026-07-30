@@ -662,7 +662,9 @@ func (h Handler) createTags(c *gin.Context) {
 	if !ok {
 		return
 	}
-	item, err := h.releaseService.CreateTags(c.Request.Context(), releaseID, currentUser(c))
+	target := c.DefaultQuery("target", "all")
+	mode := c.DefaultQuery("mode", "resume")
+	item, err := h.releaseService.CreateTags(c.Request.Context(), releaseID, target, mode, currentUser(c))
 	writeReleaseResult(c, item, err)
 }
 
