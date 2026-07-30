@@ -2,6 +2,8 @@ export type Role = "developer" | "release_manager" | "admin";
 export type ProjectKind = "backend" | "frontend";
 export type SourceType = "branch" | "tag" | "commit";
 export type ReleaseTarget = "all" | ProjectKind;
+export type ReleaseChangeType = "db" | "nacos" | "xxl_job" | "admin_op";
+export type RiskLevel = "low" | "medium" | "high";
 
 export type User = {
   id: number;
@@ -71,6 +73,20 @@ export type ReleaseProject = {
   sortOrder: number;
 };
 
+export type ReleaseChange = {
+  id: number;
+  releaseId: number;
+  type: ReleaseChangeType;
+  title: string;
+  status: string;
+  riskLevel: RiskLevel;
+  contentJson: string;
+  createdById: number;
+  createdBy?: User;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type PipelineJob = {
   id: number;
   releaseProjectId: number;
@@ -103,6 +119,7 @@ export type Release = {
   releaseWindow: string;
   remark: string;
   projects: ReleaseProject[];
+  changes: ReleaseChange[];
   events: ReleaseEvent[];
   createdAt: string;
   updatedAt: string;
@@ -117,5 +134,11 @@ export type CreateReleasePayload = {
     businessLineCode?: string;
     sourceType: SourceType;
     sourceRef: string;
+  }>;
+  changes: Array<{
+    type: ReleaseChangeType;
+    title: string;
+    riskLevel: RiskLevel;
+    content: Record<string, unknown>;
   }>;
 };

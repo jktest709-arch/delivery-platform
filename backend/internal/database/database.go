@@ -36,6 +36,7 @@ func Migrate(db *gorm.DB) error {
 		&model.Release{},
 		&model.ReleaseProject{},
 		&model.ReleasePipelineJob{},
+		&model.ReleaseChange{},
 		&model.ReleaseEvent{},
 	); err != nil {
 		return err

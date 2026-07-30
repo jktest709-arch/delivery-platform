@@ -120,6 +120,29 @@ const usersPayload = [
   },
 ];
 
+const releaseChangesPayload = [
+  {
+    id: 1,
+    releaseId: 1,
+    type: "db",
+    title: "订单表结构调整",
+    status: "pending",
+    riskLevel: "high",
+    contentJson: JSON.stringify({
+      datasource: "prod-order",
+      defaultDatabase: "order_db",
+      sqlText: "CREATE TABLE order_db.order_log (id bigint);",
+      normalizedSql: "USE order_db;\n\nCREATE TABLE order_db.order_log (id bigint);",
+      rollbackSql: "DROP TABLE order_db.order_log;",
+      warnings: ["检测到 order_db.table 写法，执行预览已自动补充 USE order_db;"],
+    }),
+    createdById: 1,
+    createdBy: usersPayload[0],
+    createdAt: "2026-07-29T09:00:00Z",
+    updatedAt: "2026-07-29T09:00:00Z",
+  },
+];
+
 const releasesPayload = [
   {
     id: 1,
@@ -180,6 +203,7 @@ const releasesPayload = [
         sortOrder: 10,
       },
     ],
+    changes: releaseChangesPayload,
     events: [],
     createdAt: "2026-07-29T09:00:00Z",
     updatedAt: "2026-07-29T09:00:00Z",
@@ -230,6 +254,12 @@ test("admin can log in and visit every main page without runtime errors", async 
   await expect(page.getByText("从历史上线单复制")).toBeVisible();
   await expect(page.getByRole("button", { name: "复制到当前申请" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "上线单预览" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "变更事项", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "变更事项预览" })).toBeVisible();
+  await page.getByRole("button", { name: "新增 DB" }).click();
+  await page.getByPlaceholder("CREATE TABLE order_db.order_log (...);").fill("CREATE TABLE pay_db.pay_log (id bigint);");
+  await expect(page.locator(".sql-preview pre").filter({ hasText: "USE pay_db;" })).toBeVisible();
+  await expect(page.locator(".notice.warn p").filter({ hasText: "检测到 pay_db.table 写法" })).toBeVisible();
 
   for (const tab of ["构建执行台", "项目配置", "Tag 与依赖", "发布历史", "用户权限", "上线单申请"]) {
     await page.getByRole("button", { name: tab }).click();
@@ -272,6 +302,9 @@ test("admin can log in and visit every main page without runtime errors", async 
   await page.getByRole("button", { name: "发布历史" }).click();
   await expect(page.getByRole("heading", { name: "PRD-20260729-001" })).toBeVisible();
   await expect(page.getByRole("button", { name: "删除任务" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "变更事项", exact: true })).toBeVisible();
+  await expect(page.getByText("订单表结构调整")).toBeVisible();
+  await expect(page.locator(".change-code-preview").filter({ hasText: "USE order_db;" })).toBeVisible();
 
   await page.getByRole("button", { name: "用户权限" }).click();
   await expect(page.getByRole("button", { name: "新增用户" })).toBeVisible();

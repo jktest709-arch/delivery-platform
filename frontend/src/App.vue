@@ -9,9 +9,12 @@ import type {
   Project,
   ProjectKind,
   ProjectPayload,
+  ReleaseChange,
+  ReleaseChangeType,
   Release,
   ReleaseProject,
   ReleaseTarget,
+  RiskLevel,
   Role,
   SourceType,
   User,
@@ -56,6 +59,19 @@ const roleText: Record<Role, string> = {
   admin: "管理员",
 };
 
+const changeTypeText: Record<ReleaseChangeType, string> = {
+  db: "DB 变更",
+  nacos: "Nacos 配置",
+  xxl_job: "XXL-JOB",
+  admin_op: "后台操作",
+};
+
+const riskText: Record<RiskLevel, string> = {
+  low: "低",
+  medium: "中",
+  high: "高",
+};
+
 const user = ref<User | null>(null);
 const users = ref<User[]>([]);
 const projects = ref<Project[]>([]);
@@ -92,6 +108,31 @@ type DependencyForm = {
   projectCode: string;
   dependencyCode: string;
 };
+type ChangeDraft = {
+  id: number;
+  type: ReleaseChangeType;
+  title: string;
+  riskLevel: RiskLevel;
+  datasource: string;
+  defaultDatabase: string;
+  sqlText: string;
+  rollbackSql: string;
+  namespace: string;
+  group: string;
+  dataId: string;
+  configFormat: string;
+  beforeContent: string;
+  afterContent: string;
+  executor: string;
+  jobHandler: string;
+  cron: string;
+  jobDesc: string;
+  adminSystem: string;
+  operationType: string;
+  operationContent: string;
+  impact: string;
+  rollbackPlan: string;
+};
 type DependencyRow = {
   key: string;
   project: Project;
@@ -104,6 +145,8 @@ type DependencyRow = {
 const selectedProjectCodes = ref<string[]>([]);
 const importReleaseId = ref(0);
 const sourceForms = reactive<Record<string, SourceForm>>({});
+const changeDrafts = ref<ChangeDraft[]>([]);
+let nextChangeDraftId = 1;
 const releaseProjectSourceDrafts = reactive<Record<number, SourceForm>>({});
 const editingReleaseProjectSourceId = ref<number | null>(null);
 const dependencyText = reactive<Record<string, string>>({});
@@ -230,6 +273,14 @@ const releasePreviewRows = computed(() => {
   return selectedProjects.value.map((project) => ({
     project,
     source: projectSourceForm(project),
+  }));
+});
+
+const changePreviewRows = computed(() => {
+  return changeDrafts.value.map((draft) => ({
+    draft,
+    normalizedSql: draft.type === "db" ? normalizedSql(draft) : "",
+    warnings: draft.type === "db" ? sqlWarnings(draft.sqlText) : [],
   }));
 });
 
@@ -521,6 +572,241 @@ function toggleProject(code: string) {
   selectedProjectCodes.value = [...selectedProjectCodes.value, code];
 }
 
+function emptyChangeDraft(type: ReleaseChangeType): ChangeDraft {
+  return {
+    id: nextChangeDraftId++,
+    type,
+    title: changeTypeText[type],
+    riskLevel: type === "db" ? "high" : "medium",
+    datasource: "prod",
+    defaultDatabase: "",
+    sqlText: "",
+    rollbackSql: "",
+    namespace: "public",
+    group: "DEFAULT_GROUP",
+    dataId: "",
+    configFormat: "yaml",
+    beforeContent: "",
+    afterContent: "",
+    executor: "",
+    jobHandler: "",
+    cron: "",
+    jobDesc: "",
+    adminSystem: "",
+    operationType: "",
+    operationContent: "",
+    impact: "",
+    rollbackPlan: "",
+  };
+}
+
+function addChangeDraft(type: ReleaseChangeType) {
+  changeDrafts.value = [...changeDrafts.value, emptyChangeDraft(type)];
+}
+
+function removeChangeDraft(id: number) {
+  changeDrafts.value = changeDrafts.value.filter((draft) => draft.id !== id);
+}
+
+function qualifiedDatabases(sql: string) {
+  const dbs = new Set<string>();
+  const pattern = /(?:`([A-Za-z0-9_$-]+)`|([A-Za-z0-9_$-]+))\s*\.\s*(?:`([A-Za-z0-9_$-]+)`|([A-Za-z0-9_$-]+))/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(sql)) !== null) {
+    const db = match[1] || match[2];
+    if (db && !["new", "old"].includes(db.toLowerCase())) {
+      dbs.add(db);
+    }
+  }
+  return Array.from(dbs);
+}
+
+function explicitUseDatabase(sql: string) {
+  return /^\s*use\s+`?([A-Za-z0-9_$-]+)`?\s*;/i.test(sql);
+}
+
+function normalizedSql(draft: ChangeDraft) {
+  const sql = draft.sqlText.trim();
+  if (!sql) {
+    return "";
+  }
+  if (explicitUseDatabase(sql)) {
+    return sql;
+  }
+  const dbs = qualifiedDatabases(sql);
+  const database = draft.defaultDatabase.trim() || (dbs.length === 1 ? dbs[0] : "");
+  if (!database) {
+    return sql;
+  }
+  return `USE ${database};\n\n${sql}`;
+}
+
+function sqlWarnings(sql: string) {
+  const warnings: string[] = [];
+  const dbs = qualifiedDatabases(sql);
+  if (dbs.length > 1) {
+    warnings.push(`检测到跨库对象：${dbs.join(", ")}，请确认是否允许跨库变更`);
+  }
+  if (dbs.length === 1 && !explicitUseDatabase(sql)) {
+    warnings.push(`检测到 ${dbs[0]}.table 写法，执行预览已自动补充 USE ${dbs[0]};`);
+  }
+  if (/\b(delete|update)\b(?![\s\S]*\bwhere\b)/i.test(sql)) {
+    warnings.push("检测到 UPDATE/DELETE 可能缺少 WHERE，请重点确认影响范围");
+  }
+  if (/\bdrop\s+database\b/i.test(sql)) {
+    warnings.push("检测到 DROP DATABASE 高危语句，请确认审批和回滚方案");
+  }
+  return warnings;
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function highlightMysql(sql: string) {
+  const escaped = escapeHtml(sql);
+  const keywords =
+    "use|create|alter|drop|table|index|view|database|insert|into|update|delete|from|where|select|set|values|primary|key|not|null|default|comment|engine|charset|collate|add|column|modify|rename|to|if|exists|on|unique";
+  return escaped.replace(new RegExp(`\\b(${keywords})\\b`, "gi"), '<span class="sql-keyword">$1</span>');
+}
+
+function changeContent(draft: ChangeDraft): Record<string, unknown> {
+  if (draft.type === "db") {
+    return {
+      datasource: draft.datasource,
+      defaultDatabase: draft.defaultDatabase,
+      sqlText: draft.sqlText,
+      normalizedSql: normalizedSql(draft),
+      rollbackSql: draft.rollbackSql,
+      warnings: sqlWarnings(draft.sqlText),
+    };
+  }
+  if (draft.type === "nacos") {
+    return {
+      namespace: draft.namespace,
+      group: draft.group,
+      dataId: draft.dataId,
+      format: draft.configFormat,
+      beforeContent: draft.beforeContent,
+      afterContent: draft.afterContent,
+      rollbackPlan: draft.rollbackPlan,
+    };
+  }
+  if (draft.type === "xxl_job") {
+    return {
+      executor: draft.executor,
+      jobHandler: draft.jobHandler,
+      cron: draft.cron,
+      jobDesc: draft.jobDesc,
+      operationType: draft.operationType,
+      rollbackPlan: draft.rollbackPlan,
+    };
+  }
+  return {
+    system: draft.adminSystem,
+    operationType: draft.operationType,
+    operationContent: draft.operationContent,
+    impact: draft.impact,
+    rollbackPlan: draft.rollbackPlan,
+  };
+}
+
+function changeSummary(change: ReleaseChange) {
+  const content = parseChangeContent(change);
+  if (change.type === "db") {
+    return `${contentText(content, "datasource", "-")} / ${contentText(content, "defaultDatabase", "-")} / SQL 变更`;
+  }
+  if (change.type === "nacos") {
+    return `${contentText(content, "namespace", "-")} / ${contentText(content, "group", "-")} / ${contentText(content, "dataId", "-")}`;
+  }
+  if (change.type === "xxl_job") {
+    return `${contentText(content, "executor", "-")} / ${contentText(content, "jobHandler", "-")} / ${contentText(content, "cron", "-")}`;
+  }
+  return `${contentText(content, "system", "-")} / ${contentText(content, "operationType", "-")}`;
+}
+
+function parseChangeContent(change: ReleaseChange) {
+  try {
+    return JSON.parse(change.contentJson || "{}") as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function contentText(content: Record<string, unknown>, key: string, fallback = "") {
+  const value = content[key];
+  if (typeof value === "string") {
+    return value.trim() || fallback;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).join("，") || fallback;
+  }
+  if (value === undefined || value === null) {
+    return fallback;
+  }
+  return String(value);
+}
+
+function changeContentText(change: ReleaseChange, key: string, fallback = "-") {
+  return contentText(parseChangeContent(change), key, fallback);
+}
+
+function changeWarnings(change: ReleaseChange) {
+  const warnings = parseChangeContent(change).warnings;
+  if (!Array.isArray(warnings)) {
+    return [];
+  }
+  return warnings.map((item) => String(item)).filter(Boolean);
+}
+
+function changeSqlPreview(change: ReleaseChange) {
+  return changeContentText(change, "normalizedSql", "") || changeContentText(change, "sqlText", "");
+}
+
+function releaseChanges(item: Release | null) {
+  return Array.isArray(item?.changes) ? item.changes : [];
+}
+
+function changeDraftFromReleaseChange(change: ReleaseChange): ChangeDraft {
+  const content = parseChangeContent(change);
+  const draft = emptyChangeDraft(change.type);
+  draft.title = change.title;
+  draft.riskLevel = change.riskLevel;
+  if (change.type === "db") {
+    draft.datasource = contentText(content, "datasource", "prod");
+    draft.defaultDatabase = contentText(content, "defaultDatabase");
+    draft.sqlText = contentText(content, "sqlText");
+    draft.rollbackSql = contentText(content, "rollbackSql");
+  } else if (change.type === "nacos") {
+    draft.namespace = contentText(content, "namespace", "public");
+    draft.group = contentText(content, "group", "DEFAULT_GROUP");
+    draft.dataId = contentText(content, "dataId");
+    draft.configFormat = contentText(content, "format", "yaml");
+    draft.beforeContent = contentText(content, "beforeContent");
+    draft.afterContent = contentText(content, "afterContent");
+    draft.rollbackPlan = contentText(content, "rollbackPlan");
+  } else if (change.type === "xxl_job") {
+    draft.executor = contentText(content, "executor");
+    draft.jobHandler = contentText(content, "jobHandler");
+    draft.cron = contentText(content, "cron");
+    draft.jobDesc = contentText(content, "jobDesc");
+    draft.operationType = contentText(content, "operationType");
+    draft.rollbackPlan = contentText(content, "rollbackPlan");
+  } else {
+    draft.adminSystem = contentText(content, "system");
+    draft.operationType = contentText(content, "operationType");
+    draft.operationContent = contentText(content, "operationContent");
+    draft.impact = contentText(content, "impact");
+    draft.rollbackPlan = contentText(content, "rollbackPlan");
+  }
+  return draft;
+}
+
 function importReleaseDraft() {
   const sourceRelease = releases.value.find((item) => item.id === importReleaseId.value);
   if (!sourceRelease) {
@@ -548,10 +834,11 @@ function importReleaseDraft() {
       sourceRef: row.sourceRef,
     };
   }
+  changeDrafts.value = (sourceRelease.changes ?? []).map((change) => changeDraftFromReleaseChange(change));
 
   selectedProjectCodes.value = orderedProjects.value.filter((project) => importedCodes.has(project.code)).map((project) => project.code);
   error.value = "";
-  message.value = `已从 ${sourceRelease.batchNo} 复制 ${selectedProjectCodes.value.length} 个项目到申请草稿`;
+  message.value = `已从 ${sourceRelease.batchNo} 复制 ${selectedProjectCodes.value.length} 个项目、${changeDrafts.value.length} 个变更事项到申请草稿`;
 }
 
 async function submitRelease() {
@@ -567,6 +854,12 @@ async function submitRelease() {
         sourceRef: form.sourceRef,
       };
     }),
+    changes: changeDrafts.value.map((draft) => ({
+      type: draft.type,
+      title: draft.title,
+      riskLevel: draft.riskLevel,
+      content: changeContent(draft),
+    })),
   };
   await run(async () => {
     const created = await api.createRelease(payload);
@@ -1489,6 +1782,164 @@ function statusLabel(status: string) {
         </div>
 
         <div class="section-head compact-head">
+          <h2>变更事项</h2>
+          <div class="inline-actions">
+            <button :disabled="loading" @click="addChangeDraft('db')">新增 DB</button>
+            <button :disabled="loading" @click="addChangeDraft('nacos')">新增 Nacos</button>
+            <button :disabled="loading" @click="addChangeDraft('xxl_job')">新增 XXL-JOB</button>
+            <button :disabled="loading" @click="addChangeDraft('admin_op')">新增后台操作</button>
+          </div>
+        </div>
+
+        <div v-if="changeDrafts.length === 0" class="empty-hint">暂无 DB、Nacos、XXL-JOB 或后台操作变更。</div>
+        <div v-for="draft in changeDrafts" :key="draft.id" class="change-editor">
+          <div class="change-editor-head">
+            <strong>{{ changeTypeText[draft.type] }}</strong>
+            <button class="danger-button" :disabled="loading" @click="removeChangeDraft(draft.id)">删除</button>
+          </div>
+          <div class="config-grid">
+            <label>
+              <span>标题</span>
+              <input v-model="draft.title" />
+            </label>
+            <label>
+              <span>风险等级</span>
+              <select v-model="draft.riskLevel">
+                <option value="low">低</option>
+                <option value="medium">中</option>
+                <option value="high">高</option>
+              </select>
+            </label>
+          </div>
+
+          <template v-if="draft.type === 'db'">
+            <div class="config-grid">
+              <label>
+                <span>数据源 / 环境</span>
+                <input v-model="draft.datasource" placeholder="prod-order" />
+              </label>
+              <label>
+                <span>默认数据库</span>
+                <input v-model="draft.defaultDatabase" placeholder="可选，自动 USE" />
+              </label>
+            </div>
+            <label>
+              <span>SQL 内容</span>
+              <textarea
+                v-model="draft.sqlText"
+                class="code-input"
+                placeholder="CREATE TABLE order_db.order_log (...);"
+              ></textarea>
+            </label>
+            <label>
+              <span>回滚 SQL</span>
+              <textarea v-model="draft.rollbackSql" class="code-input"></textarea>
+            </label>
+            <div v-if="sqlWarnings(draft.sqlText).length > 0" class="notice warn">
+              <p v-for="warning in sqlWarnings(draft.sqlText)" :key="warning">{{ warning }}</p>
+            </div>
+            <div class="sql-preview">
+              <span>执行预览</span>
+              <pre v-html="highlightMysql(normalizedSql(draft) || '-- 暂无 SQL --')"></pre>
+            </div>
+          </template>
+
+          <template v-else-if="draft.type === 'nacos'">
+            <div class="config-grid">
+              <label>
+                <span>Namespace</span>
+                <input v-model="draft.namespace" />
+              </label>
+              <label>
+                <span>Group</span>
+                <input v-model="draft.group" />
+              </label>
+              <label>
+                <span>Data ID</span>
+                <input v-model="draft.dataId" />
+              </label>
+              <label>
+                <span>格式</span>
+                <select v-model="draft.configFormat">
+                  <option value="yaml">YAML</option>
+                  <option value="properties">Properties</option>
+                  <option value="json">JSON</option>
+                  <option value="text">Text</option>
+                </select>
+              </label>
+            </div>
+            <div class="two-column">
+              <label>
+                <span>变更前</span>
+                <textarea v-model="draft.beforeContent" class="code-input"></textarea>
+              </label>
+              <label>
+                <span>变更后</span>
+                <textarea v-model="draft.afterContent" class="code-input"></textarea>
+              </label>
+            </div>
+            <label>
+              <span>回滚方案</span>
+              <textarea v-model="draft.rollbackPlan"></textarea>
+            </label>
+          </template>
+
+          <template v-else-if="draft.type === 'xxl_job'">
+            <div class="config-grid">
+              <label>
+                <span>执行器</span>
+                <input v-model="draft.executor" />
+              </label>
+              <label>
+                <span>JobHandler</span>
+                <input v-model="draft.jobHandler" />
+              </label>
+              <label>
+                <span>Cron</span>
+                <input v-model="draft.cron" />
+              </label>
+              <label>
+                <span>操作类型</span>
+                <input v-model="draft.operationType" placeholder="新增 / 修改 / 停用" />
+              </label>
+            </div>
+            <label>
+              <span>任务说明</span>
+              <textarea v-model="draft.jobDesc"></textarea>
+            </label>
+            <label>
+              <span>回滚方案</span>
+              <textarea v-model="draft.rollbackPlan"></textarea>
+            </label>
+          </template>
+
+          <template v-else>
+            <div class="config-grid">
+              <label>
+                <span>系统 / 页面</span>
+                <input v-model="draft.adminSystem" />
+              </label>
+              <label>
+                <span>操作类型</span>
+                <input v-model="draft.operationType" placeholder="新增 / 修改 / 删除" />
+              </label>
+            </div>
+            <label>
+              <span>操作内容</span>
+              <textarea v-model="draft.operationContent"></textarea>
+            </label>
+            <label>
+              <span>影响范围</span>
+              <textarea v-model="draft.impact"></textarea>
+            </label>
+            <label>
+              <span>回滚方案</span>
+              <textarea v-model="draft.rollbackPlan"></textarea>
+            </label>
+          </template>
+        </div>
+
+        <div class="section-head compact-head">
           <h2>上线单预览</h2>
           <div class="counter">
             <span>{{ releasePreviewRows.length }} 个项目</span>
@@ -1525,6 +1976,52 @@ function statusLabel(status: string) {
                 <td>
                   <button :disabled="loading" @click="toggleProject(row.project.code)">移除</button>
                 </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="section-head compact-head">
+          <h2>变更事项预览</h2>
+          <div class="counter">
+            <span>{{ changePreviewRows.length }} 项变更</span>
+          </div>
+        </div>
+
+        <div class="table-wrap preview-table change-preview-table">
+          <table>
+            <thead>
+              <tr>
+                <th>类型</th>
+                <th>标题</th>
+                <th>风险</th>
+                <th>摘要</th>
+                <th>检查提示</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-if="changePreviewRows.length === 0">
+                <td colspan="5">暂无变更事项</td>
+              </tr>
+              <tr v-for="row in changePreviewRows" :key="row.draft.id">
+                <td>{{ changeTypeText[row.draft.type] }}</td>
+                <td>{{ row.draft.title || "-" }}</td>
+                <td>{{ riskText[row.draft.riskLevel] }}</td>
+                <td>
+                  <template v-if="row.draft.type === 'db'">
+                    {{ row.draft.datasource || "-" }} / {{ row.draft.defaultDatabase || qualifiedDatabases(row.draft.sqlText)[0] || "-" }}
+                  </template>
+                  <template v-else-if="row.draft.type === 'nacos'">
+                    {{ row.draft.namespace || "-" }} / {{ row.draft.group || "-" }} / {{ row.draft.dataId || "-" }}
+                  </template>
+                  <template v-else-if="row.draft.type === 'xxl_job'">
+                    {{ row.draft.executor || "-" }} / {{ row.draft.jobHandler || "-" }} / {{ row.draft.cron || "-" }}
+                  </template>
+                  <template v-else>
+                    {{ row.draft.adminSystem || "-" }} / {{ row.draft.operationType || "-" }}
+                  </template>
+                </td>
+                <td>{{ row.warnings.join("；") || "-" }}</td>
               </tr>
             </tbody>
           </table>
@@ -2304,6 +2801,65 @@ function statusLabel(status: string) {
                 </tr>
               </tbody>
             </table>
+          </div>
+          <div class="section-head compact-head history-change-head">
+            <h2>变更事项</h2>
+            <div class="counter">
+              <span>{{ releaseChanges(currentRelease).length }} 项变更</span>
+            </div>
+          </div>
+          <div v-if="releaseChanges(currentRelease).length === 0" class="empty-hint">暂无 DB、Nacos、XXL-JOB 或后台操作变更。</div>
+          <div v-else class="change-history">
+            <article v-for="change in releaseChanges(currentRelease)" :key="change.id" class="change-history-item">
+              <div class="change-editor-head">
+                <div>
+                  <strong>{{ change.title }}</strong>
+                  <small>{{ changeTypeText[change.type] }} / 风险：{{ riskText[change.riskLevel] }} / {{ changeSummary(change) }}</small>
+                </div>
+                <span class="status" :class="change.status">{{ statusLabel(change.status) }}</span>
+              </div>
+
+              <div v-if="change.type === 'db'" class="change-content-grid">
+                <label>
+                  <span>SQL 执行预览</span>
+                  <pre class="change-code-preview" v-html="highlightMysql(changeSqlPreview(change) || '-- 暂无 SQL --')"></pre>
+                </label>
+                <label>
+                  <span>回滚 SQL</span>
+                  <pre class="change-code-preview">{{ changeContentText(change, "rollbackSql") }}</pre>
+                </label>
+                <div v-if="changeWarnings(change).length > 0" class="notice warn wide">
+                  <p v-for="warning in changeWarnings(change)" :key="warning">{{ warning }}</p>
+                </div>
+              </div>
+
+              <div v-else-if="change.type === 'nacos'" class="change-content-grid">
+                <label>
+                  <span>变更前</span>
+                  <pre class="change-code-preview">{{ changeContentText(change, "beforeContent") }}</pre>
+                </label>
+                <label>
+                  <span>变更后</span>
+                  <pre class="change-code-preview">{{ changeContentText(change, "afterContent") }}</pre>
+                </label>
+                <div class="change-meta wide">
+                  <span>Namespace：{{ changeContentText(change, "namespace") }}</span>
+                  <span>Group：{{ changeContentText(change, "group") }}</span>
+                  <span>Data ID：{{ changeContentText(change, "dataId") }}</span>
+                  <span>回滚：{{ changeContentText(change, "rollbackPlan") }}</span>
+                </div>
+              </div>
+
+              <div v-else class="change-meta">
+                <span v-if="change.type === 'xxl_job'">执行器：{{ changeContentText(change, "executor") }}</span>
+                <span v-if="change.type === 'xxl_job'">JobHandler：{{ changeContentText(change, "jobHandler") }}</span>
+                <span v-if="change.type === 'xxl_job'">Cron：{{ changeContentText(change, "cron") }}</span>
+                <span v-if="change.type === 'admin_op'">系统 / 页面：{{ changeContentText(change, "system") }}</span>
+                <span>操作类型：{{ changeContentText(change, "operationType") }}</span>
+                <span v-if="change.type === 'admin_op'">影响范围：{{ changeContentText(change, "impact") }}</span>
+                <span>回滚：{{ changeContentText(change, "rollbackPlan") }}</span>
+              </div>
+            </article>
           </div>
           <div class="timeline">
             <article v-for="event in currentRelease.events" :key="event.id">

@@ -2,6 +2,7 @@ package release
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -37,6 +38,7 @@ type CreateRequest struct {
 	ReleaseWindow    time.Time              `json:"releaseWindow"`
 	Remark           string                 `json:"remark"`
 	Projects         []CreateProjectRequest `json:"projects"`
+	Changes          []CreateChangeRequest  `json:"changes"`
 }
 
 type CreateProjectRequest struct {
@@ -44,6 +46,14 @@ type CreateProjectRequest struct {
 	BusinessLineCode string `json:"businessLineCode"`
 	SourceType       string `json:"sourceType"`
 	SourceRef        string `json:"sourceRef"`
+}
+
+type CreateChangeRequest struct {
+	Type        string                 `json:"type"`
+	Title       string                 `json:"title"`
+	RiskLevel   string                 `json:"riskLevel"`
+	ContentJSON string                 `json:"contentJson"`
+	Content     map[string]interface{} `json:"content"`
 }
 
 func NewService(db *gorm.DB, client GitLabClient) *Service {
@@ -139,6 +149,16 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 				SortOrder:      (index + 1) * 10,
 			}
 			if err := tx.Create(&releaseProject).Error; err != nil {
+				return err
+			}
+		}
+
+		for _, changeReq := range req.Changes {
+			change, err := releaseChangeFromRequest(created.ID, applicant.ID, changeReq)
+			if err != nil {
+				return err
+			}
+			if err := tx.Create(&change).Error; err != nil {
 				return err
 			}
 		}
@@ -291,6 +311,7 @@ func (s *Service) Get(ctx context.Context, id uint) (model.Release, error) {
 		Preload("Projects.Jobs").
 		Preload("Projects.Project.BusinessLine").
 		Preload("Projects.Project.BusinessLines").
+		Preload("Changes.CreatedBy").
 		Preload("Events.Operator").
 		First(&release, id).Error
 	if err != nil {
@@ -310,6 +331,7 @@ func (s *Service) List(ctx context.Context) ([]model.Release, error) {
 		Preload("Projects.Jobs").
 		Preload("Projects.Project.BusinessLine").
 		Preload("Projects.Project.BusinessLines").
+		Preload("Changes.CreatedBy").
 		Preload("Events.Operator").
 		Order("created_at desc").
 		Find(&releases).Error
@@ -386,6 +408,9 @@ func (s *Service) Delete(ctx context.Context, id uint) error {
 			if err := tx.Where("release_project_id IN ?", releaseProjectIDs).Delete(&model.ReleasePipelineJob{}).Error; err != nil {
 				return err
 			}
+		}
+		if err := tx.Where("release_id = ?", id).Delete(&model.ReleaseChange{}).Error; err != nil {
+			return err
 		}
 		if err := tx.Where("release_id = ?", id).Delete(&model.ReleaseProject{}).Error; err != nil {
 			return err
@@ -1138,6 +1163,59 @@ func releaseNoFromBatchNo(batchNo string) string {
 		return "001"
 	}
 	return releaseNo
+}
+
+func releaseChangeFromRequest(releaseID uint, createdByID uint, req CreateChangeRequest) (model.ReleaseChange, error) {
+	changeType := normalizeChangeType(req.Type)
+	if changeType == "" {
+		return model.ReleaseChange{}, fmt.Errorf("变更类型只能是 db、nacos、xxl_job 或 admin_op")
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		return model.ReleaseChange{}, fmt.Errorf("变更事项标题不能为空")
+	}
+	riskLevel := normalizeRiskLevel(req.RiskLevel)
+	contentJSON := strings.TrimSpace(req.ContentJSON)
+	if contentJSON == "" && req.Content != nil {
+		contentBytes, err := json.Marshal(req.Content)
+		if err != nil {
+			return model.ReleaseChange{}, fmt.Errorf("变更内容格式错误: %w", err)
+		}
+		contentJSON = string(contentBytes)
+	}
+	if contentJSON == "" {
+		contentJSON = "{}"
+	}
+	if !json.Valid([]byte(contentJSON)) {
+		return model.ReleaseChange{}, fmt.Errorf("变更内容必须是合法 JSON")
+	}
+	return model.ReleaseChange{
+		ReleaseID:   releaseID,
+		Type:        changeType,
+		Title:       title,
+		Status:      "pending",
+		RiskLevel:   riskLevel,
+		ContentJSON: contentJSON,
+		CreatedByID: createdByID,
+	}, nil
+}
+
+func normalizeChangeType(value string) string {
+	switch strings.TrimSpace(value) {
+	case "db", "nacos", "xxl_job", "admin_op":
+		return strings.TrimSpace(value)
+	default:
+		return ""
+	}
+}
+
+func normalizeRiskLevel(value string) string {
+	switch strings.TrimSpace(value) {
+	case "low", "medium", "high":
+		return strings.TrimSpace(value)
+	default:
+		return "medium"
+	}
 }
 
 func findReleaseProject(release model.Release, releaseProjectID uint) (model.ReleaseProject, error) {

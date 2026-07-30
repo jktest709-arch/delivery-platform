@@ -62,6 +62,7 @@ npm run test:e2e
 - 前端登录后渲染：接口返回 `dependencies: null` 时不能白屏。
 - E2E 冒烟：`admin/admin123` 登录后切换所有主页面，浏览器不能出现运行时错误。
 - 用户权限与 Pipeline 流程：覆盖管理员用户管理入口，以及执行台内 Tag、Pipeline、构建/部署 jobs 展示。
+- 上线单变更事项：覆盖 DB SQL 自动补 `USE database;` 预览、历史上线单复制和发布历史回看。
 
 默认账号：
 
@@ -134,7 +135,8 @@ Token 至少需要具备创建 tag、读取 pipeline/jobs、触发 manual job �
 
 ## 当前功能
 
-- 上线单申请：开发先指定本次发布业务线，再选择该业务线下需要上线的项目，并为项目指定分支、tag 或 commit；申请页支持上线单预览，也可以从历史上线单复制项目和来源后再编辑提交。
+- 上线单申请：开发先指定本次发布业务线，再选择该业务线下需要上线的项目，并为项目指定分支、tag 或 commit；申请页支持上线单预览，也可以从历史上线单复制项目、来源和变更事项后再编辑提交。
+- 变更事项：上线单内支持 DB 变更、Nacos 配置、XXL-JOB 和后台管理操作。DB 变更提供简单 MySQL 关键字高亮、风险提示和执行预览；当 SQL 出现 `database_name.table_name` 且未显式 `USE` 时，会自动补齐 `USE database_name;` 到执行预览与存档内容中。
 - 项目配置：新增、编辑、删除项目，维护 GitLab 地址、Project ID、默认分支、关联多条业务线。
 - 业务线配置：新增、编辑、删除业务线，维护平台、tag 前缀和 tag 模板；删除已被项目使用的业务线时，需要选择替代业务线并迁移关联项目关系。
 - 依赖顺序配置：管理员预先配置项目顺序和依赖关系，支持项目打包顺序上移/下移、新增、编辑、按依赖关系整行删除和清空依赖。
@@ -145,7 +147,7 @@ Token 至少需要具备创建 tag、读取 pipeline/jobs、触发 manual job �
 - 全量重打新 Tag 构建：清空当前上线单所有项目的 pipeline/job 状态，生成新的生产 tag，并从第一个项目重新按依赖顺序触发 GitLab CI。
 - 单项目操作：支持重试原 Pipeline、最新来源重打 Tag 和部署；重试原 Pipeline 会对已有 build/package job 调用 GitLab retry job API，最新来源重打 Tag 会生成新 tag 并触发新的 pipeline。
 - Job 日志：执行台支持直接查看构建/部署 job trace，并保留跳转 GitLab job 的链接；跳转链接优先使用项目配置里的 GitLab 仓库域名。
-- 发布历史：持久化记录批次、项目、tag、pipeline、操作时间线，并支持清理不再需要的历史发布任务。
+- 发布历史：持久化记录批次、项目、tag、pipeline、DB/Nacos/XXL-JOB/后台操作变更事项、操作时间线，并支持清理不再需要的历史发布任务。
 - 用户权限：管理员维护用户、角色、状态和重置密码；内置开发、发布经理、管理员三类角色。
 
 Tag 模板支持 `{prefix}`、`{timestamp}`、`{datetime}`、`{date}`、`{releaseNo}`，其中时间戳按秒生成，格式为 `yyyyMMddHHmmss`。旧模板里的 `{date}` 会兼容为秒级时间戳。

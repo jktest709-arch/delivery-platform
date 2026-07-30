@@ -104,6 +104,7 @@ type Release struct {
 	ReleaseWindow  time.Time        `json:"releaseWindow"`
 	Remark         string           `json:"remark" gorm:"size:512"`
 	Projects       []ReleaseProject `json:"projects"`
+	Changes        []ReleaseChange  `json:"changes"`
 	Events         []ReleaseEvent   `json:"events"`
 	CreatedAt      time.Time        `json:"createdAt"`
 	UpdatedAt      time.Time        `json:"updatedAt"`
@@ -143,6 +144,20 @@ type ReleasePipelineJob struct {
 	AllowFailure     bool      `json:"allowFailure"`
 	CreatedAt        time.Time `json:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`
+}
+
+type ReleaseChange struct {
+	ID          uint      `json:"id" gorm:"primaryKey"`
+	ReleaseID   uint      `json:"releaseId" gorm:"index;not null"`
+	Type        string    `json:"type" gorm:"size:32;index;not null"`
+	Title       string    `json:"title" gorm:"size:128;not null"`
+	Status      string    `json:"status" gorm:"size:32;index;not null;default:pending"`
+	RiskLevel   string    `json:"riskLevel" gorm:"size:32;index;not null;default:medium"`
+	ContentJSON string    `json:"contentJson" gorm:"type:text"`
+	CreatedByID uint      `json:"createdById" gorm:"index;not null"`
+	CreatedBy   User      `json:"createdBy"`
+	CreatedAt   time.Time `json:"createdAt"`
+	UpdatedAt   time.Time `json:"updatedAt"`
 }
 
 type ReleaseEvent struct {

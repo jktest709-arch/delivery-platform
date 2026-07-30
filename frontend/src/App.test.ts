@@ -122,6 +122,29 @@ const usersPayload = [
   },
 ];
 
+const releaseChangesPayload = [
+  {
+    id: 1,
+    releaseId: 1,
+    type: "db",
+    title: "订单表结构调整",
+    status: "pending",
+    riskLevel: "high",
+    contentJson: JSON.stringify({
+      datasource: "prod-order",
+      defaultDatabase: "order_db",
+      sqlText: "CREATE TABLE order_db.order_log (id bigint);",
+      normalizedSql: "USE order_db;\n\nCREATE TABLE order_db.order_log (id bigint);",
+      rollbackSql: "DROP TABLE order_db.order_log;",
+      warnings: ["检测到 order_db.table 写法，执行预览已自动补充 USE order_db;"],
+    }),
+    createdById: 1,
+    createdBy: usersPayload[0],
+    createdAt: "2026-07-29T09:00:00Z",
+    updatedAt: "2026-07-29T09:00:00Z",
+  },
+];
+
 const releasesPayload = [
   {
     id: 1,
@@ -182,6 +205,7 @@ const releasesPayload = [
         sortOrder: 10,
       },
     ],
+    changes: releaseChangesPayload,
     events: [],
     createdAt: "2026-07-29T09:00:00Z",
     updatedAt: "2026-07-29T09:00:00Z",
@@ -215,14 +239,28 @@ describe("App", () => {
     expect(wrapper.text()).toContain("发布业务线");
     expect(wrapper.text()).toContain("从历史上线单复制");
     expect(wrapper.text()).toContain("上线单预览");
+    expect(wrapper.text()).toContain("变更事项");
+    expect(wrapper.text()).toContain("变更事项预览");
     expect(wrapper.text()).toContain("复制到当前申请");
+
+    await wrapper.findAll("button").find((item) => item.text() === "新增 DB")!.trigger("click");
+    await wrapper.vm.$nextTick();
+    const sqlTextarea = wrapper.findAll("textarea").find((item) => item.attributes("placeholder")?.includes("CREATE TABLE"));
+    expect(sqlTextarea, "missing DB SQL textarea").toBeTruthy();
+    await sqlTextarea!.setValue("CREATE TABLE pay_db.pay_log (id bigint);");
+    await wrapper.vm.$nextTick();
+    expect(wrapper.text()).toContain("USE pay_db;");
+    expect(wrapper.text()).toContain("检测到 pay_db.table 写法");
+    await wrapper.findAll("button").find((item) => item.text() === "删除")!.trigger("click");
+    await wrapper.vm.$nextTick();
 
     const historySelect = wrapper.findAll("select").find((item) => item.text().includes("PRD-20260729-001"));
     expect(historySelect, "missing history release import selector").toBeTruthy();
     await historySelect!.setValue("1");
     await wrapper.findAll("button").find((item) => item.text() === "复制到当前申请")!.trigger("click");
     await wrapper.vm.$nextTick();
-    expect(wrapper.text()).toContain("已从 PRD-20260729-001 复制 1 个项目到申请草稿");
+    expect(wrapper.text()).toContain("已从 PRD-20260729-001 复制 1 个项目、1 个变更事项到申请草稿");
+    expect(wrapper.text()).toContain("订单表结构调整");
 
     for (const tab of ["构建执行台", "项目配置", "Tag 与依赖", "发布历史", "上线单申请"]) {
       const button = wrapper.findAll("button").find((item) => item.text() === tab);
@@ -231,7 +269,7 @@ describe("App", () => {
       await wrapper.vm.$nextTick();
       expect(wrapper.text()).toContain(tab);
       if (tab === "构建执行台") {
-        expect(wrapper.text()).not.toContain("已从 PRD-20260729-001 复制 1 个项目到申请草稿");
+        expect(wrapper.text()).not.toContain("已从 PRD-20260729-001 复制 1 个项目、1 个变更事项到申请草稿");
       }
     }
 
@@ -325,6 +363,8 @@ describe("App", () => {
     await wrapper.findAll("button").find((item) => item.text() === "发布历史")!.trigger("click");
     expect(wrapper.text()).toContain("PRD-20260729-001");
     expect(wrapper.text()).toContain("删除任务");
+    expect(wrapper.text()).toContain("SQL 执行预览");
+    expect(wrapper.text()).toContain("USE order_db;");
 
     await wrapper.findAll("button").find((item) => item.text() === "用户权限")!.trigger("click");
     expect(wrapper.text()).toContain("新增用户");
