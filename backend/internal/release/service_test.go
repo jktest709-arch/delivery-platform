@@ -2,6 +2,7 @@ package release
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,38 @@ func TestRenderTagKeepsOldDatePlaceholderSecondPrecision(t *testing.T) {
 	}
 }
 
+func TestReleaseOperationLockRequiresOwnerToken(t *testing.T) {
+	db := newServiceTestDB(t)
+	service := NewService(db, nil)
+	lock, err := service.acquireReleaseOperationLock(context.Background(), 999, "tag_resume", "all", 1)
+	if err != nil {
+		t.Fatalf("acquire operation lock: %v", err)
+	}
+
+	var row model.ReleaseOperationLock
+	if err := db.First(&row, 999).Error; err != nil {
+		t.Fatalf("read operation lock: %v", err)
+	}
+	previousExpiry := row.ExpiresAt
+	(&operationLock{db: db, releaseID: 999, token: "not-the-owner"}).Unlock()
+	if err := db.First(&row, 999).Error; err != nil {
+		t.Fatalf("wrong owner removed operation lock: %v", err)
+	}
+	if err := lock.Renew(context.Background()); err != nil {
+		t.Fatalf("renew operation lock: %v", err)
+	}
+	if err := db.First(&row, 999).Error; err != nil {
+		t.Fatalf("read renewed operation lock: %v", err)
+	}
+	if !row.ExpiresAt.After(previousExpiry) {
+		t.Fatal("operation lock expiry was not renewed")
+	}
+	lock.Unlock()
+	if err := db.First(&row, 999).Error; err == nil {
+		t.Fatal("operation lock still exists after owner released it")
+	}
+}
+
 func TestTagSyncsPipelineJobsAndPackagePlaysBuildJob(t *testing.T) {
 	db := newServiceTestDB(t)
 	var applicant model.User
@@ -61,6 +94,7 @@ func TestTagSyncsPipelineJobsAndPackagePlaysBuildJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create release: %v", err)
 	}
+	created = approveReleaseForTest(t, service, created, applicant)
 
 	tagged, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
 	if err != nil {
@@ -119,6 +153,103 @@ func TestReleaseOrdersSelectedProjectsByDependencies(t *testing.T) {
 	}
 }
 
+func TestCreateTagsRequiresApproval(t *testing.T) {
+	db := newServiceTestDB(t)
+	var applicant model.User
+	if err := db.Where("username = ?", "admin").First(&applicant).Error; err != nil {
+		t.Fatalf("find applicant: %v", err)
+	}
+	client := &fakeGitLabClient{}
+	service := NewService(db, client)
+
+	created, err := service.Create(context.Background(), CreateRequest{
+		BusinessLineCode: "ops",
+		ReleaseWindow:    time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC),
+		Projects: []CreateProjectRequest{
+			{ProjectCode: "base-auth", SourceType: "branch", SourceRef: "master"},
+		},
+	}, applicant)
+	if err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+
+	_, err = service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
+	if err == nil || !strings.Contains(err.Error(), "未审批") {
+		t.Fatalf("CreateTags err = %v, want approval gate error", err)
+	}
+	if len(client.taggedProjects) != 0 {
+		t.Fatalf("tagged projects = %v, want none before approval", client.taggedProjects)
+	}
+}
+
+func TestDeployRequiresBuildSuccess(t *testing.T) {
+	db := newServiceTestDB(t)
+	var applicant model.User
+	if err := db.Where("username = ?", "admin").First(&applicant).Error; err != nil {
+		t.Fatalf("find applicant: %v", err)
+	}
+	client := &fakeGitLabClient{
+		jobs: []gitlab.JobResponse{
+			{ID: "201", Name: "build-image", Stage: "build", Status: "success", WebURL: "https://gitlab/jobs/201"},
+			{ID: "301", Name: "deploy-prod", Stage: "deploy", Status: "manual", WebURL: "https://gitlab/jobs/301", Manual: true},
+		},
+	}
+	service := NewService(db, client)
+
+	created, err := service.Create(context.Background(), CreateRequest{
+		BusinessLineCode: "ops",
+		ReleaseWindow:    time.Date(2026, 7, 29, 10, 0, 0, 0, time.UTC),
+		Projects: []CreateProjectRequest{
+			{ProjectCode: "base-auth", SourceType: "branch", SourceRef: "master"},
+		},
+	}, applicant)
+	if err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+	created = approveReleaseForTest(t, service, created, applicant)
+	projectID := created.Projects[0].ID
+	if err := db.Model(&model.ReleaseProject{}).Where("id = ?", projectID).Updates(map[string]interface{}{
+		"pipeline_id":   "101",
+		"build_job_id":  "201",
+		"deploy_job_id": "301",
+	}).Error; err != nil {
+		t.Fatalf("seed release project pipeline ids: %v", err)
+	}
+	if err := db.Create(&model.ReleasePipelineJob{
+		ReleaseProjectID: projectID,
+		GitLabJobID:      "301",
+		Name:             "deploy-prod",
+		Stage:            "deploy",
+		Status:           "manual",
+		Manual:           true,
+	}).Error; err != nil {
+		t.Fatalf("seed deploy job: %v", err)
+	}
+
+	if _, err := service.Deploy(context.Background(), created.ID, "all", applicant); err == nil || !strings.Contains(err.Error(), "构建未完成") {
+		t.Fatalf("Deploy err = %v, want build gate error", err)
+	}
+	if len(client.played) != 0 {
+		t.Fatalf("played deploy jobs = %v, want none before build success", client.played)
+	}
+
+	if err := db.Model(&model.ReleaseProject{}).
+		Where("id = ?", projectID).
+		Update("status", model.ProjectStatusBuildSuccess).Error; err != nil {
+		t.Fatalf("mark build success: %v", err)
+	}
+	updated, err := service.Deploy(context.Background(), created.ID, "all", applicant)
+	if err != nil {
+		t.Fatalf("deploy after build success: %v", err)
+	}
+	if len(client.played) != 1 || client.played[0] != "301" {
+		t.Fatalf("played deploy jobs = %v, want [301]", client.played)
+	}
+	if updated.Projects[0].Status != model.ProjectStatusDeploying {
+		t.Fatalf("project status = %s, want deploying", updated.Projects[0].Status)
+	}
+}
+
 func TestCreateTagsWaitsForAutoBuildBeforeNextProject(t *testing.T) {
 	oldInterval := autoBuildPollInterval
 	oldAttempts := autoBuildPollAttempts
@@ -157,6 +288,7 @@ func TestCreateTagsWaitsForAutoBuildBeforeNextProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create release: %v", err)
 	}
+	created = approveReleaseForTest(t, service, created, applicant)
 
 	tagged, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
 	if err != nil {
@@ -200,6 +332,7 @@ func TestCreateTagsCanTargetFrontendProjectsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create release: %v", err)
 	}
+	created = approveReleaseForTest(t, service, created, applicant)
 
 	updated, err := service.CreateTags(context.Background(), created.ID, model.ProjectKindFrontend, "resume", applicant)
 	if err != nil {
@@ -259,6 +392,7 @@ func TestCreateTagsResumeRetriesFailedProjectThenContinues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create release: %v", err)
 	}
+	created = approveReleaseForTest(t, service, created, applicant)
 
 	if _, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant); err == nil {
 		t.Fatal("create tags succeeded unexpectedly with failed base-auth build")
@@ -307,6 +441,7 @@ func TestCreateTagsRestartGeneratesNewTag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create release: %v", err)
 	}
+	created = approveReleaseForTest(t, service, created, applicant)
 	first, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
 	if err != nil {
 		t.Fatalf("create tags: %v", err)
@@ -351,6 +486,7 @@ func TestUpdateProjectSourceMakesBatchTagUseLatestRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create release: %v", err)
 	}
+	created = approveReleaseForTest(t, service, created, applicant)
 	first, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
 	if err != nil {
 		t.Fatalf("create tags: %v", err)
@@ -407,6 +543,7 @@ func TestTagOneUsesLatestProjectSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create release: %v", err)
 	}
+	created = approveReleaseForTest(t, service, created, applicant)
 	tagged, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
 	if err != nil {
 		t.Fatalf("create tags: %v", err)
@@ -451,6 +588,7 @@ func TestBuildOnlyProjectDoesNotRequireDeployJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create release: %v", err)
 	}
+	created = approveReleaseForTest(t, service, created, applicant)
 
 	tagged, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
 	if err != nil {
@@ -489,6 +627,7 @@ func TestPackageOneRetriesLatestBuildJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create release: %v", err)
 	}
+	created = approveReleaseForTest(t, service, created, applicant)
 	tagged, err := service.CreateTags(context.Background(), created.ID, "all", "resume", applicant)
 	if err == nil {
 		t.Fatal("create tags succeeded unexpectedly with failed auto build")
@@ -507,6 +646,25 @@ func TestPackageOneRetriesLatestBuildJob(t *testing.T) {
 	if updated.Projects[0].Status != model.ProjectStatusBuilding {
 		t.Fatalf("project status = %s, want building", updated.Projects[0].Status)
 	}
+}
+
+func approveReleaseForTest(t *testing.T, service *Service, release model.Release, operator model.User) model.Release {
+	t.Helper()
+	var approver model.User
+	if err := service.db.Where("id <> ? AND role IN ?", operator.ID, []string{model.RoleReleaseManager, model.RoleAdmin}).First(&approver).Error; err != nil {
+		t.Fatalf("find independent approver: %v", err)
+	}
+	approved, err := service.Approve(context.Background(), release.ID, approver)
+	if err != nil {
+		t.Fatalf("approve release: %v", err)
+	}
+	if approved.Status != model.ReleaseStatusApproved {
+		t.Fatalf("approved status = %s, want %s", approved.Status, model.ReleaseStatusApproved)
+	}
+	if approved.ApproverID == nil {
+		t.Fatal("approver id is nil after approval")
+	}
+	return approved
 }
 
 func newServiceTestDB(t *testing.T) *gorm.DB {

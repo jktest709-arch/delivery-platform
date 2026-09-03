@@ -411,7 +411,7 @@ tr:last-child td {
 
 .release-summary {
   display: grid;
-  grid-template-columns: repeat(5, minmax(140px, 1fr));
+  grid-template-columns: repeat(6, minmax(130px, 1fr));
   gap: 10px;
   margin-bottom: 14px;
 }
@@ -579,6 +579,7 @@ tr:last-child td {
 }
 
 .status.pending,
+.status.approved,
 .status.tagged {
   background: #eef2f7;
   color: #475467;

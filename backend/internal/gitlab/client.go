@@ -40,6 +40,11 @@ type JobResponse struct {
 	Manual       bool
 }
 
+const (
+	maxGitLabAPIResponseBytes = 4 << 20
+	maxGitLabTraceBytes       = 10 << 20
+)
+
 func NewClient(cfg Config) *Client {
 	return &Client{
 		baseURL: normalizeBaseURL(cfg.BaseURL),
@@ -137,7 +142,9 @@ func (c *Client) ListPipelineJobs(ctx context.Context, projectID, pipelineID str
 	}
 
 	query := url.Values{}
-	query.Set("include_retried", "true")
+	// Retried jobs are returned as a new job by GitLab. Excluding historical
+	// attempts keeps status aggregation from treating an old failure as current.
+	query.Set("include_retried", "false")
 	query.Set("per_page", "100")
 	endpoint := fmt.Sprintf("%s/api/v4/projects/%s/pipelines/%s/jobs?%s", c.baseURL, url.PathEscape(projectID), url.PathEscape(pipelineID), query.Encode())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -243,7 +250,7 @@ func (c *Client) GetJobTrace(ctx context.Context, projectID, jobID string) (stri
 	}
 	req.Header.Set("PRIVATE-TOKEN", c.token)
 
-	data, err := c.doBytes(req)
+	data, err := c.doBytesLimited(req, maxGitLabTraceBytes)
 	if err != nil {
 		return "", fmt.Errorf("get trace for job %q in GitLab project %q: %w", jobID, projectID, err)
 	}
@@ -262,6 +269,16 @@ func isForbiddenError(err error) bool {
 	return strings.Contains(err.Error(), "403 Forbidden")
 }
 
+// IsAlreadyExistsError identifies the idempotent response returned when a tag
+// was created by an earlier request but the caller did not receive the result.
+func IsAlreadyExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "already exists") || strings.Contains(message, "already been taken")
+}
+
 func (c *Client) do(req *http.Request, out interface{}) error {
 	data, err := c.doBytes(req)
 	if err != nil {
@@ -274,13 +291,23 @@ func (c *Client) do(req *http.Request, out interface{}) error {
 }
 
 func (c *Client) doBytes(req *http.Request) ([]byte, error) {
+	return c.doBytesLimited(req, maxGitLabAPIResponseBytes)
+}
+
+func (c *Client) doBytesLimited(req *http.Request, maxBytes int64) ([]byte, error) {
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	data, _ := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read GitLab API response: %w", err)
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("GitLab API response exceeds %d bytes", maxBytes)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("gitlab api %s %s returned %s: %s", req.Method, req.URL.Redacted(), resp.Status, gitLabErrorMessage(data, resp.StatusCode))
 	}

@@ -18,6 +18,9 @@ WORKDIR /app
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /out/delivery-api /app/delivery-api
 
+RUN addgroup -S app && adduser -S app -G app && mkdir -p /app/data && chown -R app:app /app
+USER app
+
 ENV APP_ENV=production
 ENV HTTP_ADDR=:8080
 EXPOSE 8080

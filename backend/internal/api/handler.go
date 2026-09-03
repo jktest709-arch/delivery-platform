@@ -1,10 +1,14 @@
 package api
 
 import (
+	"context"
+	"errors"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"delivery-platform/backend/internal/auth"
 	"delivery-platform/backend/internal/config"
@@ -18,7 +22,13 @@ type Handler struct {
 	cfg            config.Config
 	db             *gorm.DB
 	releaseService *release.Service
+	operationSlots chan struct{}
 }
+
+const (
+	sessionCookieName       = "delivery-platform-session"
+	sessionMarkerCookieName = "delivery-platform-session-present"
+)
 
 type loginRequest struct {
 	Username string `json:"username"`
@@ -76,6 +86,15 @@ func (h Handler) health(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
+func (h Handler) ready(c *gin.Context) {
+	sqlDB, err := h.db.DB()
+	if err != nil || sqlDB.PingContext(c.Request.Context()) != nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not_ready"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ready"})
+}
+
 func (h Handler) login(c *gin.Context) {
 	var req loginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -96,7 +115,23 @@ func (h Handler) login(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"token": token, "user": user})
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(sessionCookieName, token, 12*60*60, "/", "", h.cfg.Env == "production", true)
+	c.SetCookie(sessionMarkerCookieName, "1", 12*60*60, "/", "", h.cfg.Env == "production", false)
+	response := gin.H{"user": user}
+	// Keep the bearer response for local/test clients. Production browsers use
+	// the HttpOnly cookie and never receive a copy that JavaScript can read.
+	if h.cfg.Env != "production" {
+		response["token"] = token
+	}
+	c.JSON(http.StatusOK, response)
+}
+
+func (h Handler) logout(c *gin.Context) {
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie(sessionCookieName, "", -1, "/", "", h.cfg.Env == "production", true)
+	c.SetCookie(sessionMarkerCookieName, "", -1, "/", "", h.cfg.Env == "production", false)
+	c.Status(http.StatusNoContent)
 }
 
 func (h Handler) me(c *gin.Context) {
@@ -608,11 +643,16 @@ func (h Handler) createRelease(c *gin.Context) {
 }
 
 func (h Handler) listReleases(c *gin.Context) {
-	releases, err := h.releaseService.List(c.Request.Context())
+	page := queryInt(c, "page", 1, 1, 1000000)
+	pageSize := queryInt(c, "pageSize", 100, 1, 100)
+	releases, total, err := h.releaseService.ListPage(c.Request.Context(), page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
 		return
 	}
+	c.Header("X-Page", strconv.Itoa(page))
+	c.Header("X-Page-Size", strconv.Itoa(pageSize))
+	c.Header("X-Total-Count", strconv.FormatInt(total, 10))
 	c.JSON(http.StatusOK, releases)
 }
 
@@ -655,11 +695,24 @@ func (h Handler) deleteRelease(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.releaseService.Delete(c.Request.Context(), releaseID); err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"message": "发布任务不存在"})
+	if err := h.releaseService.Delete(c.Request.Context(), releaseID, currentUser(c).ID); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"message": "发布任务不存在"})
+			return
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"message": err.Error()})
 		return
 	}
 	h.listReleases(c)
+}
+
+func (h Handler) approveRelease(c *gin.Context) {
+	releaseID, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+	item, err := h.releaseService.Approve(c.Request.Context(), releaseID, currentUser(c))
+	writeReleaseResult(c, item, err)
 }
 
 func (h Handler) createTags(c *gin.Context) {
@@ -669,8 +722,10 @@ func (h Handler) createTags(c *gin.Context) {
 	}
 	target := c.DefaultQuery("target", "all")
 	mode := c.DefaultQuery("mode", "resume")
-	item, err := h.releaseService.CreateTags(c.Request.Context(), releaseID, target, mode, currentUser(c))
-	writeReleaseResult(c, item, err)
+	operator := currentUser(c)
+	h.launchReleaseOperation(c, releaseID, "tag", func(ctx context.Context) (model.Release, error) {
+		return h.releaseService.CreateTags(ctx, releaseID, target, mode, operator)
+	})
 }
 
 func (h Handler) packageRelease(c *gin.Context) {
@@ -679,8 +734,10 @@ func (h Handler) packageRelease(c *gin.Context) {
 		return
 	}
 	target := c.DefaultQuery("target", "all")
-	item, err := h.releaseService.Package(c.Request.Context(), releaseID, target, currentUser(c))
-	writeReleaseResult(c, item, err)
+	operator := currentUser(c)
+	h.launchReleaseOperation(c, releaseID, "package", func(ctx context.Context) (model.Release, error) {
+		return h.releaseService.Package(ctx, releaseID, target, operator)
+	})
 }
 
 func (h Handler) deployRelease(c *gin.Context) {
@@ -689,8 +746,10 @@ func (h Handler) deployRelease(c *gin.Context) {
 		return
 	}
 	target := c.DefaultQuery("target", "all")
-	item, err := h.releaseService.Deploy(c.Request.Context(), releaseID, target, currentUser(c))
-	writeReleaseResult(c, item, err)
+	operator := currentUser(c)
+	h.launchReleaseOperation(c, releaseID, "deploy", func(ctx context.Context) (model.Release, error) {
+		return h.releaseService.Deploy(ctx, releaseID, target, operator)
+	})
 }
 
 func (h Handler) packageReleaseProject(c *gin.Context) {
@@ -702,8 +761,10 @@ func (h Handler) packageReleaseProject(c *gin.Context) {
 	if !ok {
 		return
 	}
-	item, err := h.releaseService.PackageOne(c.Request.Context(), releaseID, releaseProjectID, currentUser(c))
-	writeReleaseResult(c, item, err)
+	operator := currentUser(c)
+	h.launchReleaseOperation(c, releaseID, "package_single", func(ctx context.Context) (model.Release, error) {
+		return h.releaseService.PackageOne(ctx, releaseID, releaseProjectID, operator)
+	})
 }
 
 func (h Handler) tagReleaseProject(c *gin.Context) {
@@ -715,8 +776,10 @@ func (h Handler) tagReleaseProject(c *gin.Context) {
 	if !ok {
 		return
 	}
-	item, err := h.releaseService.TagOne(c.Request.Context(), releaseID, releaseProjectID, currentUser(c))
-	writeReleaseResult(c, item, err)
+	operator := currentUser(c)
+	h.launchReleaseOperation(c, releaseID, "tag_single", func(ctx context.Context) (model.Release, error) {
+		return h.releaseService.TagOne(ctx, releaseID, releaseProjectID, operator)
+	})
 }
 
 func (h Handler) updateReleaseProjectSource(c *gin.Context) {
@@ -746,8 +809,45 @@ func (h Handler) deployReleaseProject(c *gin.Context) {
 	if !ok {
 		return
 	}
-	item, err := h.releaseService.DeployOne(c.Request.Context(), releaseID, releaseProjectID, currentUser(c))
-	writeReleaseResult(c, item, err)
+	operator := currentUser(c)
+	h.launchReleaseOperation(c, releaseID, "deploy_single", func(ctx context.Context) (model.Release, error) {
+		return h.releaseService.DeployOne(ctx, releaseID, releaseProjectID, operator)
+	})
+}
+
+func (h Handler) launchReleaseOperation(c *gin.Context, releaseID uint, operation string, run func(context.Context) (model.Release, error)) {
+	item, err := h.releaseService.Get(c.Request.Context(), releaseID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"message": "发布任务不存在"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"message": err.Error()})
+		return
+	}
+
+	operationContext, cancel := context.WithTimeout(context.Background(), 6*time.Hour)
+	select {
+	case h.operationSlots <- struct{}{}:
+	case <-c.Request.Context().Done():
+		cancel()
+		return
+	default:
+		cancel()
+		c.Header("Retry-After", "5")
+		c.JSON(http.StatusTooManyRequests, gin.H{"message": "后台发布任务已达到并发上限，请稍后重试"})
+		return
+	}
+	go func() {
+		defer func() { <-h.operationSlots }()
+		defer cancel()
+		if _, operationErr := run(operationContext); operationErr != nil {
+			log.Printf("release %d %s operation failed: %v", releaseID, operation, operationErr)
+		}
+	}()
+
+	c.Header("Location", "/api/releases/"+strconv.FormatUint(uint64(releaseID), 10))
+	c.JSON(http.StatusAccepted, item)
 }
 
 func (h Handler) projectsWithDependencies() ([]projectDTO, error) {
@@ -976,6 +1076,9 @@ func userUpdates(req userRequest, requirePassword bool) (map[string]interface{},
 		}
 		return updates, nil
 	}
+	if config.IsWeakBootstrapPassword(password) {
+		return nil, errMessage("密码至少需要 12 个字符，且不能使用默认演示密码")
+	}
 	hash, err := auth.HashPassword(password)
 	if err != nil {
 		return nil, err
@@ -1007,11 +1110,29 @@ func parseUintParam(c *gin.Context, name string) (uint, bool) {
 	return uint(value), true
 }
 
+func queryInt(c *gin.Context, name string, fallback int, minimum int, maximum int) int {
+	value, err := strconv.Atoi(strings.TrimSpace(c.Query(name)))
+	if err != nil || value < minimum {
+		return fallback
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
+}
+
 func (h Handler) requireAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
 		tokenString := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
-		if tokenString == "" || tokenString == header {
+		if tokenString == header && strings.TrimSpace(header) != "" {
+			tokenString = ""
+		}
+		if tokenString == "" {
+			tokenString, _ = c.Cookie(sessionCookieName)
+			tokenString = strings.TrimSpace(tokenString)
+		}
+		if tokenString == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"message": "未登录"})
 			return
 		}

@@ -15,6 +15,7 @@ const (
 
 const (
 	ReleaseStatusPending       = "pending"
+	ReleaseStatusApproved      = "approved"
 	ReleaseStatusTagged        = "tagged"
 	ReleaseStatusBuilding      = "building"
 	ReleaseStatusBuildSuccess  = "build_success"
@@ -72,8 +73,12 @@ type Project struct {
 	SortOrder         int            `json:"sortOrder" gorm:"index;not null"`
 	Enabled           bool           `json:"enabled" gorm:"default:true"`
 	ProjectDependency []ProjectDependency
-	CreatedAt         time.Time `json:"createdAt"`
-	UpdatedAt         time.Time `json:"updatedAt"`
+	// Kept only for backward-compatible writes against installations created by
+	// the prototype schema. They are not part of the API or release workflow.
+	LegacyPackageJob string    `json:"-" gorm:"column:package_job"`
+	LegacyDeployJob  string    `json:"-" gorm:"column:deploy_job"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 type ProjectBusinessLine struct {
@@ -100,6 +105,7 @@ type Release struct {
 	BusinessLine   BusinessLine     `json:"businessLine"`
 	ApproverID     *uint            `json:"approverId" gorm:"index"`
 	Approver       *User            `json:"approver"`
+	ApprovedAt     *time.Time       `json:"approvedAt" gorm:"index"`
 	Status         string           `json:"status" gorm:"size:32;index;not null"`
 	ReleaseWindow  time.Time        `json:"releaseWindow"`
 	Remark         string           `json:"remark" gorm:"size:512"`
@@ -168,4 +174,15 @@ type ReleaseEvent struct {
 	Action     string    `json:"action" gorm:"size:64;not null"`
 	Message    string    `json:"message" gorm:"size:512;not null"`
 	CreatedAt  time.Time `json:"createdAt"`
+}
+
+type ReleaseOperationLock struct {
+	ReleaseID  uint      `json:"releaseId" gorm:"primaryKey"`
+	Token      string    `json:"-" gorm:"size:64;index"`
+	Operation  string    `json:"operation" gorm:"size:64;index;not null"`
+	Target     string    `json:"target" gorm:"size:64;index;not null"`
+	OperatorID uint      `json:"operatorId" gorm:"index;not null"`
+	ExpiresAt  time.Time `json:"expiresAt" gorm:"index;not null"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
 }

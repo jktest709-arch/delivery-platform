@@ -213,7 +213,7 @@ func TestUserManagementCanCreateUpdateAndDeleteUser(t *testing.T) {
 		"displayName":"测试同学",
 		"role":"developer",
 		"status":"enabled",
-		"password":"qa123456"
+		"password":"qa1234567890"
 	}`
 	recorder := authedRequest(t, router, token, http.MethodPost, "/api/users", body)
 	if recorder.Code != http.StatusOK {
@@ -248,6 +248,75 @@ func TestUserManagementRequiresAdmin(t *testing.T) {
 	recorder := authedRequest(t, router, token, http.MethodGet, "/api/users", "")
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("GET /api/users as release manager status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestConfigManagementRequiresAdmin(t *testing.T) {
+	router := newTestRouter(t)
+	token := loginAs(t, router, "release", "release123")
+
+	projectBody := `{
+		"code":"search-api",
+		"name":"搜索服务",
+		"kind":"backend",
+		"owner":"搜索组",
+		"businessLineCode":"ops",
+		"gitlabUrl":"https://gitlab.corp/delivery/search-api",
+		"gitlabProjectId":"delivery/search-api",
+		"defaultBranch":"master",
+		"sortOrder":35,
+		"enabled":true
+	}`
+	recorder := authedRequest(t, router, token, http.MethodPost, "/api/projects", projectBody)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("POST /api/projects as release manager status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = authedRequest(t, router, token, http.MethodPut, "/api/dependencies/base-auth", `{"dependencies":[]}`)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("PUT /api/dependencies/base-auth as release manager status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestReleaseApprovalRequiresOperatorRole(t *testing.T) {
+	router := newTestRouter(t)
+	devToken := loginAs(t, router, "dev", "dev123")
+	releaseToken := loginAs(t, router, "release", "release123")
+
+	body := `{
+		"releaseWindow":"2026-07-29T10:00:00Z",
+		"remark":"approval test",
+		"projects":[{"projectCode":"base-auth","sourceType":"branch","sourceRef":"master"}]
+	}`
+	recorder := authedRequest(t, router, devToken, http.MethodPost, "/api/releases", body)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("POST /api/releases status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var created struct {
+		ID uint `json:"id"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create release response: %v", err)
+	}
+
+	recorder = authedRequest(t, router, devToken, http.MethodPost, "/api/releases/"+strconv.Itoa(int(created.ID))+"/approve", "")
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("POST /api/releases/%d/approve as developer status = %d, body = %s", created.ID, recorder.Code, recorder.Body.String())
+	}
+
+	recorder = authedRequest(t, router, releaseToken, http.MethodPost, "/api/releases/"+strconv.Itoa(int(created.ID))+"/approve", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("POST /api/releases/%d/approve status = %d, body = %s", created.ID, recorder.Code, recorder.Body.String())
+	}
+	var approved struct {
+		Status     string `json:"status"`
+		ApproverID *uint `json:"approverId"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &approved); err != nil {
+		t.Fatalf("decode approve release response: %v", err)
+	}
+	if approved.Status != "approved" || approved.ApproverID == nil {
+		t.Fatalf("approved payload = %+v, want approved status and approver", approved)
 	}
 }
 

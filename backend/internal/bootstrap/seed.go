@@ -2,16 +2,32 @@ package bootstrap
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"delivery-platform/backend/internal/auth"
+	"delivery-platform/backend/internal/config"
 	"delivery-platform/backend/internal/model"
 	"gorm.io/gorm"
 )
 
-func Seed(db *gorm.DB) error {
-	if err := seedUsers(db); err != nil {
+func Seed(db *gorm.DB, configs ...config.Config) error {
+	cfg := config.Config{
+		Env:                       "local",
+		SeedDemoData:              true,
+		BootstrapAdminUsername:    "admin",
+		BootstrapAdminDisplayName: "高远",
+		BootstrapAdminPassword:    "admin123",
+	}
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
+
+	if err := seedUsers(db, cfg); err != nil {
 		return err
+	}
+	if !cfg.SeedDemoData {
+		return nil
 	}
 	if err := seedBusinessLines(db); err != nil {
 		return err
@@ -25,13 +41,42 @@ func Seed(db *gorm.DB) error {
 	return seedDependencies(db)
 }
 
-func seedUsers(db *gorm.DB) error {
+func seedUsers(db *gorm.DB, cfg config.Config) error {
 	var count int64
 	if err := db.Model(&model.User{}).Count(&count).Error; err != nil {
 		return err
 	}
 	if count > 0 {
 		return nil
+	}
+
+	if cfg.Env == "production" {
+		password := strings.TrimSpace(cfg.BootstrapAdminPassword)
+		if password == "" {
+			return fmt.Errorf("production database has no users; set BOOTSTRAP_ADMIN_PASSWORD to create the first admin")
+		}
+		if config.IsWeakBootstrapPassword(password) {
+			return fmt.Errorf("BOOTSTRAP_ADMIN_PASSWORD is too weak for production")
+		}
+		username := strings.TrimSpace(cfg.BootstrapAdminUsername)
+		if username == "" {
+			username = "admin"
+		}
+		displayName := strings.TrimSpace(cfg.BootstrapAdminDisplayName)
+		if displayName == "" {
+			displayName = username
+		}
+		hash, err := auth.HashPassword(password)
+		if err != nil {
+			return err
+		}
+		return db.Create(&model.User{
+			Username:     username,
+			DisplayName:  displayName,
+			PasswordHash: hash,
+			Role:         model.RoleAdmin,
+			Status:       "enabled",
+		}).Error
 	}
 
 	users := []struct {

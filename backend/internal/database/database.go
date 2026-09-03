@@ -38,19 +38,9 @@ func Migrate(db *gorm.DB) error {
 		&model.ReleasePipelineJob{},
 		&model.ReleaseChange{},
 		&model.ReleaseEvent{},
+		&model.ReleaseOperationLock{},
 	); err != nil {
 		return err
-	}
-	return migrateLegacySchema(db)
-}
-
-func migrateLegacySchema(db *gorm.DB) error {
-	for _, column := range []string{"package_job", "deploy_job"} {
-		if db.Migrator().HasColumn(&model.Project{}, column) {
-			if err := db.Exec("ALTER TABLE projects DROP COLUMN " + column).Error; err != nil {
-				return fmt.Errorf("drop legacy projects.%s: %w", column, err)
-			}
-		}
 	}
 	return nil
 }

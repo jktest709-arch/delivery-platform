@@ -4,10 +4,10 @@
 
 ## 技术栈
 
-- 后端：Go、Gin、GORM、JWT，按 go-admin 常见后台工程分层组织。
+- 后端：Go、Gin、GORM、JWT、RBAC，按 go-admin 常见后台工程分层组织。
 - 前端：Vue 3、Vite、TypeScript，作为 go-admin-ui 风格的管理台二开入口。
 - 数据库：本地默认 SQLite，私有化部署默认 MySQL 8.4。
-- GitLab：后端统一托管 GitLab Token，支持 dry-run 和真实 API 模式。
+- GitLab：后端统一托管 GitLab Token，支持 dry-run 和真实 API 模式，并通过审批门禁、执行锁控制发布动作。
 - 部署：Docker Compose，包含 MySQL、后端 API、前端 Nginx。
 
 ## 项目结构
@@ -64,7 +64,7 @@ npm run test:e2e
 - 用户权限与 Pipeline 流程：覆盖管理员用户管理入口，以及执行台内 Tag、Pipeline、构建/部署 jobs 展示。
 - 上线单变更事项：覆盖 DB SQL 自动补 `USE database;` 预览、历史上线单复制和发布历史回看。
 
-默认账号：
+默认账号只在本地开发或 `SEED_DEMO_DATA=true` 时初始化：
 
 ```text
 admin / admin123       管理员
@@ -72,14 +72,23 @@ release / release123   发布经理
 dev / dev123           开发
 ```
 
+生产环境 `APP_ENV=production` 不会初始化演示账号；空库首次启动需要设置 `BOOTSTRAP_ADMIN_PASSWORD` 创建第一个管理员。
+
 ## 私有化部署
 
 ```bash
 cp deploy/.env.example .env
 
-# 按需修改 .env：
-# JWT_SECRET=强随机字符串
+# 必须修改 .env：
+# JWT_SECRET=32 位以上强随机字符串，例如 openssl rand -base64 48
+# BOOTSTRAP_ADMIN_PASSWORD=首个管理员强密码
+# MYSQL_PASSWORD=数据库应用用户密码
+# MYSQL_ROOT_PASSWORD=数据库 root 密码
+# DB_DSN=与上面数据库用户、密码和库名一致的 DSN
+#
+# 按需修改：
 # WEB_PORT=8080
+# BACKEND_PORT=8080
 # GITLAB_BASE_URL=https://gitlab.your-company.com
 # GITLAB_TOKEN=你的 GitLab Token
 # GITLAB_DRY_RUN=true
@@ -87,16 +96,33 @@ cp deploy/.env.example .env
 docker compose up --build -d
 ```
 
-部署完成后访问 `http://服务器IP:8080`。后端健康检查为 `http://服务器IP:8080/healthz`。
+部署完成后应通过企业负载均衡器或反向代理的 HTTPS 入口访问。`/healthz` 是存活检查，`/readyz` 会额外检查数据库连接；直接访问 Compose 的 HTTP 端口只适合内网调试和健康检查。
 
-如果希望改成 `18080` 访问，不要只改 `HTTP_ADDR`，而是这样配置：
+生产环境应在云负载均衡器或反向代理层终止 HTTPS，并仅将 HTTPS 暴露给用户；当前 Compose 内的 Nginx 提供安全响应头、登录限流和后端代理，不内置证书。
+
+数据库备份与恢复使用显式脚本。恢复会覆盖目标库，必须显式确认：
+
+```bash
+sh deploy/backup-mysql.sh
+CONFIRM_RESTORE=YES sh deploy/restore-mysql.sh backups/delivery-platform-<timestamp>.sql
+```
+
+发布历史按需清理，默认保留 180 天；脚本会跳过仍有执行锁或正在运行项目的上线单，可由 cron、Kubernetes CronJob 或运维平台定期调用：
+
+```bash
+RETAIN_DAYS=180 sh deploy/prune-releases.sh
+```
+
+首次登录使用 `BOOTSTRAP_ADMIN_USERNAME` 和 `BOOTSTRAP_ADMIN_PASSWORD`。如果数据库已经存在用户，后续启动不会再覆盖或重置管理员密码。
+
+如果希望改成 `18080` 访问，只需这样配置：
 
 ```text
 WEB_PORT=18080
-CORS_ORIGINS=*
+CORS_ORIGINS=https://delivery.example.com
 ```
 
-`WEB_PORT` 是宿主机对外访问端口；`HTTP_ADDR` 是后端容器内部监听地址，通常保持 `:8080` 即可。修改 `.env` 后需要重新创建容器：
+`WEB_PORT` 是宿主机对外访问端口；`BACKEND_PORT` 是后端容器内部端口，通常保持 `8080` 即可。修改 `.env` 后需要重新创建容器：
 
 ```bash
 docker compose down
@@ -136,6 +162,7 @@ Token 至少需要具备创建 tag、读取 pipeline/jobs、触发 manual job �
 ## 当前功能
 
 - 上线单申请：开发先指定本次发布业务线，再选择该业务线下需要上线的项目，并为项目指定分支、tag 或 commit；申请页支持上线单预览，也可以从历史上线单复制项目、来源和变更事项后再编辑提交。
+- 审批门禁：上线单提交后处于待处理状态，发布经理或管理员审批通过后，才能执行打 Tag 构建、单项目重试和生产部署。
 - 变更事项：上线单内支持 DB 变更、Nacos 配置、XXL-JOB 和后台管理操作。DB 变更提供简单 MySQL 关键字高亮、风险提示和执行预览；当 SQL 出现 `database_name.table_name` 且未显式 `USE` 时，会自动补齐 `USE database_name;` 到执行预览与存档内容中。
 - 项目配置：新增、编辑、删除项目，维护 GitLab 地址、Project ID、默认分支、关联多条业务线。
 - 业务线配置：新增、编辑、删除业务线，维护平台、tag 前缀和 tag 模板；删除已被项目使用的业务线时，需要选择替代业务线并迁移关联项目关系。
@@ -148,15 +175,18 @@ Token 至少需要具备创建 tag、读取 pipeline/jobs、触发 manual job �
 - 单项目操作：支持重试原 Pipeline、最新来源重打 Tag 和部署；重试原 Pipeline 会对已有 build/package job 调用 GitLab retry job API，最新来源重打 Tag 会生成新 tag 并触发新的 pipeline。
 - Job 日志：执行台支持直接查看构建/部署 job trace，并保留跳转 GitLab job 的链接；跳转链接优先使用项目配置里的 GitLab 仓库域名。
 - 发布历史：持久化记录批次、项目、tag、pipeline、DB/Nacos/XXL-JOB/后台操作变更事项、操作时间线，并支持清理不再需要的历史发布任务。
-- 用户权限：管理员维护用户、角色、状态和重置密码；内置开发、发布经理、管理员三类角色。
+- 用户权限：管理员维护用户、角色、状态和重置密码；配置管理类页面和写接口只允许管理员访问，发布执行类操作允许发布经理和管理员访问。
 
 Tag 模板支持 `{prefix}`、`{timestamp}`、`{datetime}`、`{date}`、`{releaseNo}`，其中时间戳按秒生成，格式为 `yyyyMMddHHmmss`。旧模板里的 `{date}` 会兼容为秒级时间戳。
 
 当前 GitLab CI 流程以 tag 触发 pipeline 为准：平台创建 tag 后等待 GitLab 自动生成 pipeline，再查询该 pipeline 的 jobs。批量“打 Tag 构建”按钮不会传 `JOB_NAME`，而是调用 `/api/releases/:id/tag?target=all|backend|frontend&mode=resume`；如果某个项目失败会停止后续项目，再次点击同范围按钮会断点续建。若项目来源已修改，断点续建会为该项目生成新 tag，而不是 retry 旧 pipeline。单项目“重试原 Pipeline”用于原 pipeline 补发，“最新来源重打 Tag”用于基于新分支、Tag 或 Commit 触发新 pipeline。执行台会轮询当前上线单并同步 GitLab jobs，避免自动构建完成后页面仍停留在旧状态。
 
+同一个上线单同一时间只允许一个构建、重试、重打 Tag 或部署动作执行，平台会通过数据库执行锁避免重复点击导致 tag、pipeline 和状态写入混乱。
+
 ## 后续建议
 
-- 接入完整 go-admin 菜单、Casbin 策略和操作日志表。
-- 增加审批流节点：提交、审批、构建、部署、关闭。
-- 增加 GitLab pipeline 状态轮询任务和失败日志抓取。
+- 接入完整 go-admin 菜单、Casbin 策略和更细粒度操作日志表。
+- 将单级审批升级为可配置多级审批流，补齐关闭、回滚、变更事项执行确认节点。
+- 将 GitLab pipeline 状态轮询迁移到后台任务队列，减少长时间 HTTP 请求。
+- 引入版本化数据库迁移工具，生产环境逐步替代 GORM AutoMigrate。
 - 增加 LDAP/OIDC 登录，用企业账号替换内置账号。

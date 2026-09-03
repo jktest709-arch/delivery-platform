@@ -6,10 +6,32 @@ on:
   pull_request:
     branches: ["main"]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: delivery-platform-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backend:
     name: Backend
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: delivery_platform
+          MYSQL_USER: delivery
+          MYSQL_PASSWORD: delivery-ci-password
+          MYSQL_ROOT_PASSWORD: delivery-ci-root-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u root -pdelivery-ci-root-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
     steps:
       - uses: actions/checkout@v4
 
@@ -20,7 +42,13 @@ jobs:
 
       - name: Test backend
         working-directory: backend
+        env:
+          MYSQL_TEST_DSN: delivery:delivery-ci-password@tcp(127.0.0.1:3306)/delivery_platform?charset=utf8mb4&parseTime=True&loc=UTC
         run: go test ./...
+
+      - name: Race test backend
+        working-directory: backend
+        run: go test -race ./...
 
   frontend:
     name: Frontend
@@ -53,3 +81,70 @@ jobs:
       - name: Run E2E smoke tests
         working-directory: frontend
         run: npm run test:e2e
+
+  container:
+    name: Container build and Compose validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate Compose configuration
+        env:
+          MYSQL_USER: delivery
+          MYSQL_PASSWORD: delivery-ci-password
+          MYSQL_ROOT_PASSWORD: delivery-ci-root-password
+          DB_DSN: delivery:delivery-ci-password@tcp(mysql:3306)/delivery_platform?charset=utf8mb4&parseTime=True&loc=UTC
+          JWT_SECRET: ci-only-secret-with-at-least-32-characters
+          CORS_ORIGINS: http://localhost:8080
+          GITLAB_BASE_URL: https://gitlab.example.com
+          GITLAB_DRY_RUN: "true"
+          BOOTSTRAP_ADMIN_PASSWORD: ci-bootstrap-password-2026
+        run: docker compose config --quiet
+
+      - name: Build application images
+        env:
+          MYSQL_USER: delivery
+          MYSQL_PASSWORD: delivery-ci-password
+          MYSQL_ROOT_PASSWORD: delivery-ci-root-password
+          DB_DSN: delivery:delivery-ci-password@tcp(mysql:3306)/delivery_platform?charset=utf8mb4&parseTime=True&loc=UTC
+          JWT_SECRET: ci-only-secret-with-at-least-32-characters
+          CORS_ORIGINS: http://localhost:8080
+          GITLAB_BASE_URL: https://gitlab.example.com
+          GITLAB_DRY_RUN: "true"
+          BOOTSTRAP_ADMIN_PASSWORD: ci-bootstrap-password-2026
+        run: docker compose build --pull=false
+
+      - name: Run Compose smoke test
+        env:
+          MYSQL_USER: delivery
+          MYSQL_PASSWORD: delivery-ci-password
+          MYSQL_ROOT_PASSWORD: delivery-ci-root-password
+          DB_DSN: delivery:delivery-ci-password@tcp(mysql:3306)/delivery_platform?charset=utf8mb4&parseTime=True&loc=UTC
+          JWT_SECRET: ci-only-secret-with-at-least-32-characters
+          CORS_ORIGINS: http://localhost:8080
+          GITLAB_BASE_URL: https://gitlab.example.com
+          GITLAB_DRY_RUN: "true"
+          BOOTSTRAP_ADMIN_PASSWORD: ci-bootstrap-password-2026
+        run: |
+          set -eu
+          trap 'docker compose down -v' EXIT
+          docker compose up -d
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/readyz >/dev/null; then
+              break
+            fi
+            if [ "$attempt" -eq 30 ]; then
+              docker compose ps
+              docker compose logs backend mysql
+              exit 1
+            fi
+            sleep 2
+          done
+          curl --fail --silent --cookie-jar /tmp/delivery-platform-cookies \
+            -H 'Content-Type: application/json' \
+            --data '{"username":"admin","password":"ci-bootstrap-password-2026"}' \
+            http://127.0.0.1:8080/api/auth/login >/dev/null
+          session_cookie=$(awk '$6 == "delivery-platform-session" { print $7 }' /tmp/delivery-platform-cookies)
+          test -n "$session_cookie"
+          curl --fail --silent --cookie "delivery-platform-session=$session_cookie" \
+            http://127.0.0.1:8080/api/me >/dev/null

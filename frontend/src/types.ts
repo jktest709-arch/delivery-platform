@@ -114,7 +114,9 @@ export type Release = {
   applicant: User;
   businessLineId?: number;
   businessLine?: BusinessLine;
+  approverId?: number | null;
   approver?: User;
+  approvedAt?: string | null;
   status: string;
   releaseWindow: string;
   remark: string;

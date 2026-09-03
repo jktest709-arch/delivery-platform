@@ -8,14 +8,14 @@ flowchart LR
   Web --> API["Go API"]
   API --> DB["MySQL / SQLite"]
   API --> GitLab["GitLab API"]
-  API --> Auth["JWT / RBAC"]
+  API --> Auth["HttpOnly session cookie / JWT / RBAC"]
 ```
 
 ## 后端模块
 
-- `internal/model`：用户、业务线、项目多业务线关联、依赖、上线单、上线项目、发布事件。
+- `internal/model`：用户、业务线、项目多业务线关联、依赖、上线单、上线项目、变更事项、发布事件、执行锁。
 - `internal/api`：HTTP 路由、登录鉴权、配置管理、上线单和执行接口。
-- `internal/release`：批次号生成、依赖排序、tag 生成、自动构建等待、同步 pipeline jobs、按目标分组构建、单项目重试、job trace 查询、状态聚合。
+- `internal/release`：批次号生成、依赖排序、审批门禁、执行锁、tag 生成、自动构建等待、同步 pipeline jobs、按目标分组构建、单项目重试、部署门禁、job trace 查询、状态聚合。
 - `internal/gitlab`：创建 tag、按 tag 查询 pipeline、查询 pipeline jobs、触发 manual job、retry job、读取 job trace；dry-run 模式下返回模拟 pipeline/jobs。
 - `internal/bootstrap`：初始化默认账号、业务线、项目和依赖顺序。
 
@@ -31,7 +31,11 @@ flowchart LR
 | `releases` | 上线单主表，保存本次发布业务线 |
 | `release_projects` | 上线单内项目、本次业务线、来源、目标 tag、pipeline 状态 |
 | `release_pipeline_jobs` | GitLab pipeline jobs 快照 |
+| `release_changes` | DB、Nacos、XXL-JOB、后台操作等上线变更事项 |
 | `release_events` | 发布历史时间线 |
+| `release_operation_locks` | 上线单执行锁，防止并发重复打 tag、重试或部署 |
+
+执行类接口使用有界后台 goroutine，将长时间 GitLab 轮询从 HTTP 请求中解耦；操作状态以 `release_projects`、`releases` 和 `release_events` 持久化，前端通过详情轮询获取结果。执行锁使用随机 token 和 15 分钟租约，后台轮询期间续租，进程异常退出后锁可自动过期。
 
 ## 发布流程
 
@@ -46,7 +50,11 @@ sequenceDiagram
   Dev->>Web: 选择本次业务线、项目和分支/tag/commit
   Web->>API: POST /api/releases
   API->>DB: 创建上线单和项目快照
+  Web->>API: POST /api/releases/:id/approve
+  API->>DB: 写入审批人、审批时间和事件
   Web->>API: POST /api/releases/:id/tag?target=backend&mode=resume
+  API-->>Web: 202 Accepted + Location
+  API->>DB: 获取带租约的上线单执行锁
   loop 按依赖顺序逐个项目
     API->>GL: 创建项目 tag
     API->>GL: 按 tag 查询 pipeline，读取 jobs
@@ -54,6 +62,7 @@ sequenceDiagram
     API->>GL: 轮询 build/package jobs
     API->>DB: 构建完成后同步最终状态
   end
+  API->>DB: 续租并最终释放上线单执行锁
   Web->>API: POST /api/releases/:id/tag?target=all&mode=restart
   API->>DB: 生成新 tag 并清空旧 pipeline/job 状态
   Web->>API: PUT /api/releases/:id/projects/:releaseProjectId/source
@@ -65,28 +74,35 @@ sequenceDiagram
   Web->>API: GET /api/releases/:id/projects/:releaseProjectId/jobs/:jobId/trace
   API->>GL: 读取 job trace
   Web->>API: POST /api/releases/:id/deploy
+  API->>DB: 校验已审批、已构建成功、来源未变更
   API->>GL: play deploy manual job
   API->>DB: 写入发布历史
 ```
 
 ## 关键接口
 
+配置写接口需要 `admin` 角色；审批、打 Tag、重试、部署、删除发布任务需要 `release_manager` 或 `admin` 角色；开发角色默认只提交上线单、查看执行台和发布历史。
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `POST` | `/api/auth/login` | 登录 |
+| `POST` | `/api/auth/logout` | 清理 HttpOnly 会话 Cookie |
 | `GET` | `/api/projects` | 项目与依赖配置 |
 | `PUT` | `/api/projects/order` | 保存项目打包顺序 |
 | `PUT` | `/api/projects/:code` | 保存项目 GitLab 配置 |
 | `GET` | `/api/business-lines` | 业务线 tag 配置 |
 | `PUT` | `/api/dependencies/:code` | 保存项目依赖 |
 | `POST` | `/api/releases` | 提交上线单 |
-| `GET` | `/api/releases` | 发布历史 |
-| `POST` | `/api/releases/:id/tag?target=all/backend/frontend&mode=resume` | 范围打 tag 构建，支持断点续建 |
+| `GET` | `/api/releases?page=1&pageSize=100` | 分页发布历史，响应头返回总数 |
+| `POST` | `/api/releases/:id/approve` | 审批通过上线单 |
+| `POST` | `/api/releases/:id/tag?target=all/backend/frontend&mode=resume` | 异步范围打 tag 构建，支持断点续建，返回 `202` |
 | `POST` | `/api/releases/:id/tag?target=all&mode=restart` | 全量重打新 tag 构建 |
-| `POST` | `/api/releases/:id/package?target=all/backend/frontend` | 兼容触发已有 pipeline manual build job |
-| `POST` | `/api/releases/:id/deploy?target=all/backend/frontend` | 一键部署 |
+| `POST` | `/api/releases/:id/package?target=all/backend/frontend` | 异步触发已有 pipeline manual build job，返回 `202` |
+| `POST` | `/api/releases/:id/deploy?target=all/backend/frontend` | 异步一键部署，返回 `202` |
 | `PUT` | `/api/releases/:id/projects/:releaseProjectId/source` | 保存单项目最新来源 |
 | `POST` | `/api/releases/:id/projects/:releaseProjectId/package` | 单项目重试原 pipeline |
 | `POST` | `/api/releases/:id/projects/:releaseProjectId/tag` | 单项目最新来源重打 tag |
 | `POST` | `/api/releases/:id/projects/:releaseProjectId/deploy` | 单项目部署 |
 | `GET` | `/api/releases/:id/projects/:releaseProjectId/jobs/:jobId/trace` | 查看 job 日志 |
+
+`GET /api/releases` 默认最多返回 100 条记录，可通过 `page`、`pageSize` 分页；响应头提供 `X-Total-Count`。生产登录使用 HttpOnly、Secure、SameSite=Strict Cookie，JWT 不暴露给浏览器脚本。

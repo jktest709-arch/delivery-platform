@@ -12,18 +12,28 @@ import type {
 } from "./types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
-const TOKEN_KEY = "delivery-platform-token";
+let legacyBearerToken: string | null = null;
+let sessionKnown = false;
 
 export function getToken() {
-  return localStorage.getItem(TOKEN_KEY);
+  return legacyBearerToken;
 }
 
-export function setToken(token: string) {
-  localStorage.setItem(TOKEN_KEY, token);
+export function setToken(token?: string) {
+	// Authentication is maintained by the HttpOnly cookie. Keep this function
+	// as a compatibility boundary for callers migrated from bearer storage.
+	void token;
+	legacyBearerToken = null;
+	sessionKnown = true;
 }
 
 export function clearToken() {
-  localStorage.removeItem(TOKEN_KEY);
+	legacyBearerToken = null;
+	sessionKnown = false;
+}
+
+export function hasSession() {
+	return sessionKnown || document.cookie.split(";").some((cookie) => cookie.trim().startsWith("delivery-platform-session-present="));
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -37,6 +47,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers,
+    credentials: "include",
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -47,10 +58,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   async login(username: string, password: string) {
-    return request<{ token: string; user: User }>("/auth/login", {
+    return request<{ token?: string; user: User }>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ username, password }),
     });
+  },
+  logout() {
+    return request<void>("/auth/logout", { method: "POST" });
   },
   me() {
     return request<User>("/me");
@@ -139,6 +153,9 @@ export const api = {
   },
   deleteRelease(id: number) {
     return request<Release[]>(`/releases/${id}`, { method: "DELETE" });
+  },
+  approveRelease(id: number) {
+    return request<Release>(`/releases/${id}/approve`, { method: "POST" });
   },
   createTags(id: number, target: ReleaseTarget = "all", mode: "resume" | "restart" = "resume") {
     return request<Release>(`/releases/${id}/tag?target=${target}&mode=${mode}`, { method: "POST" });

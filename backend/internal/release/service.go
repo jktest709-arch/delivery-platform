@@ -2,7 +2,10 @@ package release
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -31,6 +34,14 @@ type Service struct {
 var (
 	autoBuildPollInterval = 2 * time.Second
 	autoBuildPollAttempts = 150
+	// The lease is deliberately short; long-running operations renew it while
+	// active, so a crashed process does not block a release for hours.
+	releaseOperationLockTTL = 15 * time.Minute
+)
+
+var (
+	errReleaseOperationBusy = errors.New("上线单已有执行中的操作，请稍后刷新状态后重试")
+	errReleaseOperationLost = errors.New("上线单执行锁已失效，请刷新状态后重试")
 )
 
 type CreateRequest struct {
@@ -68,8 +79,13 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 	projectCodes := make([]string, 0, len(req.Projects))
 	sourceByCode := map[string]CreateProjectRequest{}
 	for _, item := range req.Projects {
-		if strings.TrimSpace(item.ProjectCode) == "" || strings.TrimSpace(item.SourceRef) == "" {
-			return model.Release{}, fmt.Errorf("projectCode and sourceRef are required")
+		if strings.TrimSpace(item.ProjectCode) == "" {
+			return model.Release{}, fmt.Errorf("projectCode is required")
+		}
+		var err error
+		item.SourceType, item.SourceRef, err = normalizeSource(item.SourceType, item.SourceRef)
+		if err != nil {
+			return model.Release{}, err
 		}
 		projectCodes = append(projectCodes, item.ProjectCode)
 		sourceByCode[item.ProjectCode] = item
@@ -176,13 +192,64 @@ func (s *Service) Create(ctx context.Context, req CreateRequest, applicant model
 	return s.Get(ctx, created.ID)
 }
 
-func (s *Service) CreateTags(ctx context.Context, releaseID uint, target string, mode string, operator model.User) (model.Release, error) {
+func (s *Service) Approve(ctx context.Context, releaseID uint, operator model.User) (model.Release, error) {
 	release, err := s.Get(ctx, releaseID)
 	if err != nil {
 		return release, err
 	}
+	if release.Status != model.ReleaseStatusPending && release.Status != model.ReleaseStatusApproved {
+		return release, fmt.Errorf("当前上线单状态为 %s，不能审批", release.Status)
+	}
+	if release.ApplicantID == operator.ID {
+		return release, fmt.Errorf("申请人不能审批自己的上线单")
+	}
+	if release.ApproverID != nil || release.ApprovedAt != nil || release.Status == model.ReleaseStatusApproved {
+		return release, nil
+	}
 
+	now := time.Now()
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&model.Release{}).
+			Where("id = ? AND status = ?", releaseID, model.ReleaseStatusPending).
+			Updates(map[string]interface{}{
+				"approver_id": operator.ID,
+				"approved_at": now,
+				"status":      model.ReleaseStatusApproved,
+			})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("当前上线单状态已变化，请刷新后重试")
+		}
+		item := event(releaseID, operator.ID, "approve_release", fmt.Sprintf("%s 审批通过上线单。", operator.DisplayName))
+		return tx.Create(&item).Error
+	})
+	if err != nil {
+		return release, err
+	}
+	return s.Get(ctx, releaseID)
+}
+
+func (s *Service) CreateTags(ctx context.Context, releaseID uint, target string, mode string, operator model.User) (model.Release, error) {
 	target = normalizeTarget(target)
+	if mode != "restart" {
+		mode = "resume"
+	}
+	lock, err := s.acquireReleaseOperationLock(ctx, releaseID, "tag_"+mode, target, operator.ID)
+	if err != nil {
+		return model.Release{}, err
+	}
+	defer lock.Unlock()
+
+	release, err := s.Get(ctx, releaseID)
+	if err != nil {
+		return release, err
+	}
+	if err := ensureReleaseApproved(release); err != nil {
+		return release, err
+	}
+
 	selectedProjects := filterByTarget(release.Projects, target)
 	if len(selectedProjects) == 0 {
 		return release, fmt.Errorf("没有匹配的%s项目", targetLabel(target))
@@ -199,7 +266,10 @@ func (s *Service) CreateTags(ctx context.Context, releaseID uint, target string,
 	}
 
 	for _, item := range selectedProjects {
-		if err := s.createOrResumeTagBuild(ctx, item); err != nil {
+		if err := lock.Renew(ctx); err != nil {
+			return release, err
+		}
+		if err := s.createOrResumeTagBuild(ctx, item, lock); err != nil {
 			return release, err
 		}
 	}
@@ -236,8 +306,17 @@ func (s *Service) PackageOne(ctx context.Context, releaseID uint, releaseProject
 }
 
 func (s *Service) TagOne(ctx context.Context, releaseID uint, releaseProjectID uint, operator model.User) (model.Release, error) {
+	lock, err := s.acquireReleaseOperationLock(ctx, releaseID, "tag_single", strconv.FormatUint(uint64(releaseProjectID), 10), operator.ID)
+	if err != nil {
+		return model.Release{}, err
+	}
+	defer lock.Unlock()
+
 	release, err := s.Get(ctx, releaseID)
 	if err != nil {
+		return release, err
+	}
+	if err := ensureReleaseApproved(release); err != nil {
 		return release, err
 	}
 	target, err := findReleaseProject(release, releaseProjectID)
@@ -248,7 +327,10 @@ func (s *Service) TagOne(ctx context.Context, releaseID uint, releaseProjectID u
 	if err != nil {
 		return release, err
 	}
-	if err := s.createTagAndWaitBuild(ctx, target); err != nil {
+	if err := lock.Renew(ctx); err != nil {
+		return release, err
+	}
+	if err := s.createTagAndWaitBuild(ctx, target, lock); err != nil {
 		return release, err
 	}
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -269,6 +351,12 @@ func (s *Service) DeployOne(ctx context.Context, releaseID uint, releaseProjectI
 }
 
 func (s *Service) UpdateProjectSource(ctx context.Context, releaseID uint, releaseProjectID uint, sourceType string, sourceRef string, operator model.User) (model.Release, error) {
+	lock, err := s.acquireReleaseOperationLock(ctx, releaseID, "source_update", strconv.FormatUint(uint64(releaseProjectID), 10), operator.ID)
+	if err != nil {
+		return model.Release{}, err
+	}
+	defer lock.Unlock()
+
 	release, err := s.Get(ctx, releaseID)
 	if err != nil {
 		return release, err
@@ -276,6 +364,9 @@ func (s *Service) UpdateProjectSource(ctx context.Context, releaseID uint, relea
 	target, err := findReleaseProject(release, releaseProjectID)
 	if err != nil {
 		return release, err
+	}
+	if target.Status == model.ProjectStatusBuilding || target.Status == model.ProjectStatusDeploying {
+		return release, fmt.Errorf("%s 正在执行中，不能修改来源", target.Project.Name)
 	}
 	sourceType, sourceRef, err = normalizeSource(sourceType, sourceRef)
 	if err != nil {
@@ -322,7 +413,28 @@ func (s *Service) Get(ctx context.Context, id uint) (model.Release, error) {
 }
 
 func (s *Service) List(ctx context.Context) ([]model.Release, error) {
-	var releases []model.Release
+	releases, _, err := s.ListPage(ctx, 1, 100)
+	return releases, err
+}
+
+func (s *Service) ListPage(ctx context.Context, page int, pageSize int) ([]model.Release, int64, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 100
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+
+	query := s.db.WithContext(ctx).Model(&model.Release{})
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	releases := make([]model.Release, 0, pageSize)
 	err := s.db.WithContext(ctx).
 		Preload("Applicant").
 		Preload("BusinessLine").
@@ -334,14 +446,16 @@ func (s *Service) List(ctx context.Context) ([]model.Release, error) {
 		Preload("Changes.CreatedBy").
 		Preload("Events.Operator").
 		Order("created_at desc").
+		Limit(pageSize).
+		Offset((page - 1) * pageSize).
 		Find(&releases).Error
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	for i := range releases {
 		sortRelease(&releases[i])
 	}
-	return releases, nil
+	return releases, total, nil
 }
 
 func (s *Service) SyncPipelines(ctx context.Context, releaseID uint) (model.Release, error) {
@@ -349,6 +463,14 @@ func (s *Service) SyncPipelines(ctx context.Context, releaseID uint) (model.Rele
 	if err != nil || s.gitlab == nil {
 		return release, err
 	}
+	syncLock, lockErr := s.acquireReleaseOperationLock(ctx, releaseID, "sync", "all", 0)
+	if lockErr != nil {
+		if errors.Is(lockErr, errReleaseOperationBusy) {
+			return release, nil
+		}
+		return release, lockErr
+	}
+	defer syncLock.Unlock()
 
 	for _, item := range release.Projects {
 		if item.PipelineID == "" || !shouldRefreshPipelineJobs(item) {
@@ -391,12 +513,42 @@ func (s *Service) JobTrace(ctx context.Context, releaseID uint, releaseProjectID
 	return s.gitlab.GetJobTrace(ctx, releaseProject.Project.GitLabProjectID, job.GitLabJobID)
 }
 
-func (s *Service) Delete(ctx context.Context, id uint) error {
+func (s *Service) Delete(ctx context.Context, id uint, operatorIDs ...uint) error {
 	var release model.Release
 	if err := s.db.WithContext(ctx).First(&release, id).Error; err != nil {
 		return err
 	}
+	operatorID := uint(0)
+	if len(operatorIDs) > 0 {
+		operatorID = operatorIDs[0]
+	}
+	lock, err := s.acquireReleaseOperationLock(ctx, id, "delete", "all", operatorID)
+	if err != nil {
+		return err
+	}
+	defer lock.Unlock()
+	var activeLocks int64
+	if err := s.db.WithContext(ctx).Model(&model.ReleaseOperationLock{}).
+		Where("release_id = ? AND token <> ? AND expires_at >= ?", id, lock.token, time.Now()).
+		Count(&activeLocks).Error; err != nil {
+		return err
+	}
+	if activeLocks > 0 {
+		return fmt.Errorf("上线单正在执行中，不能删除")
+	}
+	var runningProjects int64
+	if err := s.db.WithContext(ctx).Model(&model.ReleaseProject{}).
+		Where("release_id = ? AND status IN ?", id, []string{model.ProjectStatusBuilding, model.ProjectStatusDeploying}).
+		Count(&runningProjects).Error; err != nil {
+		return err
+	}
+	if runningProjects > 0 {
+		return fmt.Errorf("上线单仍有执行中的项目，不能删除")
+	}
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("release_id = ?", id).Delete(&model.ReleaseOperationLock{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("release_id = ?", id).Delete(&model.ReleaseEvent{}).Error; err != nil {
 			return err
 		}
@@ -419,18 +571,162 @@ func (s *Service) Delete(ctx context.Context, id uint) error {
 	})
 }
 
+type operationLock struct {
+	db        *gorm.DB
+	releaseID uint
+	token     string
+}
+
+func (lock *operationLock) Unlock() {
+	if lock == nil {
+		return
+	}
+	_ = lock.db.WithContext(context.Background()).
+		Where("release_id = ? AND token = ?", lock.releaseID, lock.token).
+		Delete(&model.ReleaseOperationLock{}).Error
+}
+
+func (lock *operationLock) Renew(ctx context.Context) error {
+	if lock == nil {
+		return errReleaseOperationLost
+	}
+	result := lock.db.WithContext(ctx).Model(&model.ReleaseOperationLock{}).
+		Where("release_id = ? AND token = ? AND expires_at >= ?", lock.releaseID, lock.token, time.Now()).
+		Update("expires_at", time.Now().Add(releaseOperationLockTTL))
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return errReleaseOperationLost
+	}
+	return nil
+}
+
+func (s *Service) acquireReleaseOperationLock(ctx context.Context, releaseID uint, operation string, target string, operatorID uint) (*operationLock, error) {
+	now := time.Now()
+	tokenBytes := make([]byte, 32)
+	if _, err := cryptorand.Read(tokenBytes); err != nil {
+		return nil, fmt.Errorf("生成上线单执行锁失败: %w", err)
+	}
+	lock := model.ReleaseOperationLock{
+		ReleaseID:  releaseID,
+		Token:      hex.EncodeToString(tokenBytes),
+		Operation:  strings.TrimSpace(operation),
+		Target:     strings.TrimSpace(target),
+		OperatorID: operatorID,
+		ExpiresAt:  now.Add(releaseOperationLockTTL),
+	}
+	if lock.Operation == "" {
+		lock.Operation = "execute"
+	}
+	if lock.Target == "" {
+		lock.Target = "all"
+	}
+
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("expires_at < ?", now).Delete(&model.ReleaseOperationLock{}).Error; err != nil {
+			return err
+		}
+		var active int64
+		if err := tx.Model(&model.ReleaseOperationLock{}).
+			Where("release_id = ? AND expires_at >= ?", releaseID, now).
+			Count(&active).Error; err != nil {
+			return err
+		}
+		if active > 0 {
+			return errReleaseOperationBusy
+		}
+		return tx.Create(&lock).Error
+	})
+	if err != nil {
+		if errors.Is(err, errReleaseOperationBusy) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("获取上线单执行锁失败: %w", err)
+	}
+
+	return &operationLock{db: s.db, releaseID: releaseID, token: lock.Token}, nil
+}
+
+func ensureReleaseApproved(release model.Release) error {
+	if release.ApproverID != nil && release.ApprovedAt != nil && release.Status != model.ReleaseStatusPending {
+		return nil
+	}
+	return fmt.Errorf("上线单未审批，不能执行构建或部署")
+}
+
+func ensureDeployable(release model.Release, projects []model.ReleaseProject) error {
+	if err := ensureReleaseApproved(release); err != nil {
+		return err
+	}
+	deployableCount := 0
+	for _, item := range projects {
+		if !releaseProjectHasDeployJob(item) {
+			continue
+		}
+		deployableCount++
+		if item.SourceDirty {
+			return fmt.Errorf("%s 来源已修改，请先重新打 Tag 构建后再部署", item.Project.Name)
+		}
+		switch item.Status {
+		case model.ProjectStatusBuildSuccess, model.ProjectStatusDeployFailed, model.ProjectStatusDeploySuccess:
+			continue
+		default:
+			return fmt.Errorf("%s 构建未完成或状态异常，不能部署", item.Project.Name)
+		}
+	}
+	if deployableCount == 0 {
+		return fmt.Errorf("当前范围没有可部署项目")
+	}
+	return nil
+}
+
+func releaseProjectHasDeployJob(item model.ReleaseProject) bool {
+	if strings.TrimSpace(item.DeployJobID) != "" {
+		return true
+	}
+	for _, job := range item.Jobs {
+		if matchesActionJob(job.Stage, job.Name, "deploy") {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) runPipelines(ctx context.Context, releaseID uint, target string, operator model.User, action string) (model.Release, error) {
+	target = normalizeTarget(target)
+	lock, err := s.acquireReleaseOperationLock(ctx, releaseID, action, target, operator.ID)
+	if err != nil {
+		return model.Release{}, err
+	}
+	defer lock.Unlock()
+
 	release, err := s.Get(ctx, releaseID)
 	if err != nil {
 		return release, err
 	}
+	selectedProjects := filterByTarget(release.Projects, target)
+	if len(selectedProjects) == 0 {
+		return release, fmt.Errorf("没有匹配的%s项目", targetLabel(target))
+	}
+	if action == "deploy" {
+		if err := ensureDeployable(release, selectedProjects); err != nil {
+			return release, err
+		}
+	} else if err := ensureReleaseApproved(release); err != nil {
+		return release, err
+	}
+
+	for _, item := range selectedProjects {
+		if err := lock.Renew(ctx); err != nil {
+			return release, err
+		}
+		if err := s.playJobs(ctx, s.db.WithContext(ctx), item, action); err != nil {
+			return release, err
+		}
+	}
 
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		for _, item := range filterByTarget(release.Projects, target) {
-			if err := s.playJobs(ctx, tx, item, action); err != nil {
-				return err
-			}
-		}
 		if err := s.refreshReleaseStatus(tx, release.ID); err != nil {
 			return err
 		}
@@ -451,6 +747,12 @@ func (s *Service) runPipelines(ctx context.Context, releaseID uint, target strin
 }
 
 func (s *Service) runOne(ctx context.Context, releaseID uint, releaseProjectID uint, operator model.User, action string) (model.Release, error) {
+	lock, err := s.acquireReleaseOperationLock(ctx, releaseID, action+"_single", strconv.FormatUint(uint64(releaseProjectID), 10), operator.ID)
+	if err != nil {
+		return model.Release{}, err
+	}
+	defer lock.Unlock()
+
 	release, err := s.Get(ctx, releaseID)
 	if err != nil {
 		return release, err
@@ -466,11 +768,22 @@ func (s *Service) runOne(ctx context.Context, releaseID uint, releaseProjectID u
 	if target == nil {
 		return release, fmt.Errorf("release project not found")
 	}
+	if action == "deploy" {
+		if err := ensureDeployable(release, []model.ReleaseProject{*target}); err != nil {
+			return release, err
+		}
+	} else if err := ensureReleaseApproved(release); err != nil {
+		return release, err
+	}
+
+	if err := lock.Renew(ctx); err != nil {
+		return release, err
+	}
+	if err := s.playJobs(ctx, s.db.WithContext(ctx), *target, action); err != nil {
+		return release, err
+	}
 
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := s.playJobs(ctx, tx, *target, action); err != nil {
-			return err
-		}
 		if err := s.refreshReleaseStatus(tx, release.ID); err != nil {
 			return err
 		}
@@ -501,7 +814,7 @@ func (s *Service) playJobs(ctx context.Context, tx *gorm.DB, item model.ReleaseP
 	if item.PipelineID == "" {
 		pipeline, err := s.findPipelineAfterTag(ctx, item)
 		if err != nil {
-			return s.markActionFailed(tx, item.ID, action, err)
+			return s.markActionFailed(tx, item.ReleaseID, item.ID, action, err)
 		}
 		if err := s.syncPipelineJobs(ctx, tx, item, pipeline); err != nil {
 			return err
@@ -511,12 +824,12 @@ func (s *Service) playJobs(ctx context.Context, tx *gorm.DB, item model.ReleaseP
 
 	jobs, err := s.gitlab.ListPipelineJobs(ctx, item.Project.GitLabProjectID, item.PipelineID)
 	if err != nil {
-		return s.markActionFailed(tx, item.ID, action, err)
+		return s.markActionFailed(tx, item.ReleaseID, item.ID, action, err)
 	}
 	jobAction := actionJobKind(action)
 	matchingJobs := filterActionJobs(jobs, jobAction)
 	if len(matchingJobs) == 0 {
-		return s.markActionFailed(tx, item.ID, action, fmt.Errorf("未找到可匹配的%s job", actionLabel(action)))
+		return s.markActionFailed(tx, item.ReleaseID, item.ID, action, fmt.Errorf("未找到可匹配的%s job", actionLabel(action)))
 	}
 	playableJobs := filterPlayableJobs(matchingJobs)
 	if action == "rebuild" {
@@ -531,18 +844,18 @@ func (s *Service) playJobs(ctx context.Context, tx *gorm.DB, item model.ReleaseP
 			status == model.ProjectStatusBuilding || status == model.ProjectStatusDeploying {
 			return s.updateReleaseProjectFromJobs(tx, item.ID, item.PipelineID, jobs, "")
 		}
-		return s.markActionFailed(tx, item.ID, action, fmt.Errorf("未找到 manual 状态的%s job", actionLabel(action)))
+		return s.markActionFailed(tx, item.ReleaseID, item.ID, action, fmt.Errorf("未找到 manual 状态的%s job", actionLabel(action)))
 	}
 
 	for _, job := range playableJobs {
 		if _, err := s.gitlab.PlayJob(ctx, item.Project.GitLabProjectID, job.ID); err != nil {
-			return s.markActionFailed(tx, item.ID, action, err)
+			return s.markActionFailed(tx, item.ReleaseID, item.ID, action, err)
 		}
 	}
 
 	refreshedJobs, err := s.gitlab.ListPipelineJobs(ctx, item.Project.GitLabProjectID, item.PipelineID)
 	if err != nil {
-		return s.markActionFailed(tx, item.ID, action, err)
+		return s.markActionFailed(tx, item.ReleaseID, item.ID, action, err)
 	}
 	return s.updateReleaseProjectFromJobs(tx, item.ID, item.PipelineID, refreshedJobs, "")
 }
@@ -551,7 +864,7 @@ func (s *Service) rebuildJobs(ctx context.Context, tx *gorm.DB, item model.Relea
 	if len(playableJobs) > 0 {
 		for _, job := range playableJobs {
 			if _, err := s.gitlab.PlayJob(ctx, item.Project.GitLabProjectID, job.ID); err != nil {
-				return s.markActionFailed(tx, item.ID, "rebuild", err)
+				return s.markActionFailed(tx, item.ReleaseID, item.ID, "rebuild", err)
 			}
 		}
 	} else {
@@ -563,21 +876,21 @@ func (s *Service) rebuildJobs(ctx context.Context, tx *gorm.DB, item model.Relea
 			if actionState(jobs, "package") == "running" {
 				return s.updateReleaseProjectFromJobs(tx, item.ID, item.PipelineID, jobs, "")
 			}
-			return s.markActionFailed(tx, item.ID, "rebuild", fmt.Errorf("未找到可重新构建的 build/package job"))
+			return s.markActionFailed(tx, item.ReleaseID, item.ID, "rebuild", fmt.Errorf("未找到可重新构建的 build/package job"))
 		}
 		if _, err := s.gitlab.RetryJob(ctx, item.Project.GitLabProjectID, retryJob.ID); err != nil {
-			return s.markActionFailed(tx, item.ID, "rebuild", err)
+			return s.markActionFailed(tx, item.ReleaseID, item.ID, "rebuild", err)
 		}
 	}
 
 	refreshedJobs, err := s.gitlab.ListPipelineJobs(ctx, item.Project.GitLabProjectID, item.PipelineID)
 	if err != nil {
-		return s.markActionFailed(tx, item.ID, "rebuild", err)
+		return s.markActionFailed(tx, item.ReleaseID, item.ID, "rebuild", err)
 	}
 	return s.updateReleaseProjectFromJobs(tx, item.ID, item.PipelineID, refreshedJobs, "")
 }
 
-func (s *Service) createOrResumeTagBuild(ctx context.Context, item model.ReleaseProject) error {
+func (s *Service) createOrResumeTagBuild(ctx context.Context, item model.ReleaseProject, lock *operationLock) error {
 	if item.SourceDirty {
 		release, err := s.Get(ctx, item.ReleaseID)
 		if err != nil {
@@ -587,15 +900,15 @@ func (s *Service) createOrResumeTagBuild(ctx context.Context, item model.Release
 		if err != nil {
 			return err
 		}
-		return s.createTagAndWaitBuild(ctx, refreshedItem)
+		return s.createTagAndWaitBuild(ctx, refreshedItem, lock)
 	}
 	if batchBuildCompleted(item) {
 		return nil
 	}
 	if item.Status == model.ProjectStatusBuildFailed && item.PipelineID != "" {
-		return s.retryBuildAndWait(ctx, item)
+		return s.retryBuildAndWait(ctx, item, lock)
 	}
-	return s.createTagAndWaitBuild(ctx, item)
+	return s.createTagAndWaitBuild(ctx, item, lock)
 }
 
 func batchBuildCompleted(item model.ReleaseProject) bool {
@@ -607,11 +920,14 @@ func batchBuildCompleted(item model.ReleaseProject) bool {
 	}
 }
 
-func (s *Service) retryBuildAndWait(ctx context.Context, item model.ReleaseProject) error {
+func (s *Service) retryBuildAndWait(ctx context.Context, item model.ReleaseProject, lock *operationLock) error {
+	if err := lock.Renew(ctx); err != nil {
+		return err
+	}
 	if err := s.playJobs(ctx, s.db.WithContext(ctx), item, "rebuild"); err != nil {
 		return err
 	}
-	return s.waitForAutoBuild(ctx, item, item.PipelineID)
+	return s.waitForAutoBuild(ctx, item, item.PipelineID, lock)
 }
 
 func (s *Service) resetTagsForTarget(ctx context.Context, release model.Release, target string) error {
@@ -686,14 +1002,18 @@ func (s *Service) resetTagProjects(ctx context.Context, release model.Release, s
 	})
 }
 
-func (s *Service) createTagAndWaitBuild(ctx context.Context, item model.ReleaseProject) error {
+func (s *Service) createTagAndWaitBuild(ctx context.Context, item model.ReleaseProject, lock *operationLock) error {
 	pipeline := gitlab.PipelineResponse{
 		ID: item.PipelineID,
 	}
 	if item.PipelineID == "" {
-		if err := s.gitlab.CreateTag(ctx, item.Project.GitLabProjectID, item.TargetTag, item.SourceRef); err != nil {
-			_ = s.recordActionFailure(ctx, item.ReleaseID, item.ID, "package", err)
+		if err := lock.Renew(ctx); err != nil {
 			return err
+		}
+		createErr := s.gitlab.CreateTag(ctx, item.Project.GitLabProjectID, item.TargetTag, item.SourceRef)
+		if createErr != nil && !gitlab.IsAlreadyExistsError(createErr) {
+			_ = s.recordActionFailure(ctx, item.ReleaseID, item.ID, "package", createErr)
+			return createErr
 		}
 		found, err := s.findPipelineAfterTag(ctx, item)
 		if err != nil {
@@ -701,10 +1021,27 @@ func (s *Service) createTagAndWaitBuild(ctx context.Context, item model.ReleaseP
 			return err
 		}
 		pipeline = found
+		if strings.TrimSpace(pipeline.ID) == "" {
+			err := fmt.Errorf("GitLab 返回了空 pipeline id")
+			_ = s.recordActionFailure(ctx, item.ReleaseID, item.ID, "package", err)
+			return err
+		}
+		if err := s.db.WithContext(ctx).Model(&model.ReleaseProject{}).
+			Where("id = ? AND release_id = ?", item.ID, item.ReleaseID).
+			Update("pipeline_id", pipeline.ID).Error; err != nil {
+			_ = s.recordActionFailure(ctx, item.ReleaseID, item.ID, "package", err)
+			return err
+		}
+	}
+
+	jobs, err := s.gitlab.ListPipelineJobs(ctx, item.Project.GitLabProjectID, pipeline.ID)
+	if err != nil {
+		_ = s.recordActionFailure(ctx, item.ReleaseID, item.ID, "package", err)
+		return err
 	}
 
 	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := s.syncPipelineJobs(ctx, tx, item, pipeline); err != nil {
+		if err := s.updateReleaseProjectFromJobs(tx, item.ID, pipeline.ID, jobs, ""); err != nil {
 			return err
 		}
 		return s.refreshReleaseStatus(tx, item.ReleaseID)
@@ -712,7 +1049,7 @@ func (s *Service) createTagAndWaitBuild(ctx context.Context, item model.ReleaseP
 		return err
 	}
 
-	return s.waitForAutoBuild(ctx, item, pipeline.ID)
+	return s.waitForAutoBuild(ctx, item, pipeline.ID, lock)
 }
 
 func (s *Service) findPipelineAfterTag(ctx context.Context, item model.ReleaseProject) (gitlab.PipelineResponse, error) {
@@ -740,8 +1077,12 @@ func (s *Service) syncPipelineJobs(ctx context.Context, tx *gorm.DB, item model.
 	return s.updateReleaseProjectFromJobs(tx, item.ID, pipeline.ID, jobs, "")
 }
 
-func (s *Service) waitForAutoBuild(ctx context.Context, item model.ReleaseProject, pipelineID string) error {
+func (s *Service) waitForAutoBuild(ctx context.Context, item model.ReleaseProject, pipelineID string, lock *operationLock) error {
 	for attempt := 0; attempt < autoBuildPollAttempts; attempt++ {
+		if err := lock.Renew(ctx); err != nil {
+			_ = s.recordActionFailure(ctx, item.ReleaseID, item.ID, "package", err)
+			return err
+		}
 		jobs, err := s.gitlab.ListPipelineJobs(ctx, item.Project.GitLabProjectID, pipelineID)
 		if err != nil {
 			_ = s.recordActionFailure(ctx, item.ReleaseID, item.ID, "package", err)
@@ -764,7 +1105,9 @@ func (s *Service) waitForAutoBuild(ctx context.Context, item model.ReleaseProjec
 		case "running":
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				err := ctx.Err()
+				_ = s.recordActionFailure(ctx, item.ReleaseID, item.ID, "package", err)
+				return err
 			case <-time.After(autoBuildPollInterval):
 			}
 		default:
@@ -817,32 +1160,67 @@ func (s *Service) replacePipelineJobs(tx *gorm.DB, releaseProjectID uint, jobs [
 	return nil
 }
 
-func (s *Service) markActionFailed(tx *gorm.DB, releaseProjectID uint, action string, err error) error {
+func (s *Service) markActionFailed(tx *gorm.DB, releaseID uint, releaseProjectID uint, action string, err error) error {
 	failedStatus := model.ProjectStatusBuildFailed
 	if action == "deploy" {
 		failedStatus = model.ProjectStatusDeployFailed
 	}
-	tx.Model(&model.ReleaseProject{}).Where("id = ?", releaseProjectID).Updates(map[string]interface{}{
+	if err == nil {
+		err = fmt.Errorf("%s action failed", action)
+	}
+	if updateErr := tx.Model(&model.ReleaseProject{}).Where("id = ?", releaseProjectID).Updates(map[string]interface{}{
 		"status":        failedStatus,
-		"error_message": err.Error(),
-	})
+		"error_message": truncateErrorMessage(err.Error()),
+	}).Error; updateErr != nil {
+		return updateErr
+	}
+	if eventErr := tx.Create(&model.ReleaseEvent{
+		ReleaseID: releaseID,
+		Action:    action + "_failed",
+		Message:   truncateErrorMessage(fmt.Sprintf("%s 执行失败：%s", actionLabel(action), err.Error())),
+	}).Error; eventErr != nil {
+		return eventErr
+	}
+	if refreshErr := s.refreshReleaseStatus(tx, releaseID); refreshErr != nil {
+		return refreshErr
+	}
 	return err
 }
 
 func (s *Service) recordActionFailure(ctx context.Context, releaseID uint, releaseProjectID uint, action string, cause error) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	if cause == nil {
+		cause = fmt.Errorf("release action failed")
+	}
+	failureCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return s.db.WithContext(failureCtx).Transaction(func(tx *gorm.DB) error {
 		failedStatus := model.ProjectStatusBuildFailed
 		if action == "deploy" {
 			failedStatus = model.ProjectStatusDeployFailed
 		}
 		if err := tx.Model(&model.ReleaseProject{}).Where("id = ?", releaseProjectID).Updates(map[string]interface{}{
 			"status":        failedStatus,
-			"error_message": cause.Error(),
+			"error_message": truncateErrorMessage(cause.Error()),
+		}).Error; err != nil {
+			return err
+		}
+		if err := tx.Create(&model.ReleaseEvent{
+			ReleaseID: releaseID,
+			Action:    action + "_failed",
+			Message:   truncateErrorMessage(fmt.Sprintf("%s 执行失败：%s", actionLabel(action), cause.Error())),
 		}).Error; err != nil {
 			return err
 		}
 		return s.refreshReleaseStatus(tx, releaseID)
 	})
+}
+
+func truncateErrorMessage(message string) string {
+	const maxMessageLength = 512
+	if len(message) <= maxMessageLength {
+		return message
+	}
+	return message[:maxMessageLength]
 }
 
 func filterActionJobs(jobs []gitlab.JobResponse, action string) []gitlab.JobResponse {
@@ -1288,6 +1666,10 @@ func filterByTarget(projects []model.ReleaseProject, target string) []model.Rele
 }
 
 func (s *Service) refreshReleaseStatus(tx *gorm.DB, releaseID uint) error {
+	var release model.Release
+	if err := tx.Select("id", "approver_id", "approved_at").First(&release, releaseID).Error; err != nil {
+		return err
+	}
 	var projects []model.ReleaseProject
 	if err := tx.Where("release_id = ?", releaseID).Find(&projects).Error; err != nil {
 		return err
@@ -1342,6 +1724,9 @@ func (s *Service) refreshReleaseStatus(tx *gorm.DB, releaseID uint) error {
 		status = model.ReleaseStatusBuilding
 	case allTagged:
 		status = model.ReleaseStatusTagged
+	}
+	if status == model.ReleaseStatusPending && (release.ApproverID != nil || release.ApprovedAt != nil) {
+		status = model.ReleaseStatusApproved
 	}
 	return tx.Model(&model.Release{}).Where("id = ?", releaseID).Update("status", status).Error
 }

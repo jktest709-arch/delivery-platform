@@ -9,7 +9,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestMigrateDropsLegacyProjectJobColumns(t *testing.T) {
+func TestMigratePreservesLegacyProjectJobColumns(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open("file:"+strings.ReplaceAll(t.Name(), "/", "_")+"?mode=memory&cache=shared"), &gorm.Config{})
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
@@ -40,8 +40,8 @@ func TestMigrateDropsLegacyProjectJobColumns(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	for _, column := range []string{"package_job", "deploy_job"} {
-		if db.Migrator().HasColumn(&model.Project{}, column) {
-			t.Fatalf("legacy column %s still exists", column)
+		if !db.Migrator().HasColumn(&model.Project{}, column) {
+			t.Fatalf("legacy column %s was unexpectedly removed", column)
 		}
 	}
 

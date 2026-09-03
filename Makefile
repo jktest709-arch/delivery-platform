@@ -8,15 +8,15 @@ frontend-dev:
 	npm run dev --prefix frontend
 
 frontend-build:
-	npm install --prefix frontend
+	npm ci --prefix frontend
 	npm run build --prefix frontend
 
 frontend-test:
-	npm install --prefix frontend
+	npm ci --prefix frontend
 	npm run test --prefix frontend
 
 frontend-e2e:
-	npm install --prefix frontend
+	npm ci --prefix frontend
 	npm run test:e2e --prefix frontend
 
 test: backend-test frontend-build frontend-test

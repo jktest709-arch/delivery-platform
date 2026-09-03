@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { api, clearToken, getToken, setToken } from "./api";
+import { api, clearToken, hasSession, setToken } from "./api";
 import type {
   BusinessLine,
   BusinessLinePayload,
@@ -32,6 +32,7 @@ const tabs = [
 
 const statusText: Record<string, string> = {
   pending: "待处理",
+  approved: "已审批",
   tagged: "已打 Tag",
   building: "构建中",
   build_success: "构建完成",
@@ -187,10 +188,11 @@ const canOperate = computed(() => {
   return user.value?.role === "release_manager" || user.value?.role === "admin";
 });
 
-const canManageUsers = computed(() => user.value?.role === "admin");
+const canConfigure = computed(() => user.value?.role === "admin");
+const canManageUsers = canConfigure;
 
 const visibleTabs = computed(() => {
-  return tabs.filter((tab) => tab.key !== "users" || canManageUsers.value);
+  return tabs.filter((tab) => !["projects", "rules", "users"].includes(tab.key) || canConfigure.value);
 });
 
 const currentTabLabel = computed(() => {
@@ -288,6 +290,26 @@ const currentReleaseHasDeployJobs = computed(() => {
   return currentRelease.value?.projects.some((row) => hasDeployJobs(row)) ?? false;
 });
 
+const currentReleaseCanBuild = computed(() => {
+  return currentRelease.value ? releaseIsApproved(currentRelease.value) : false;
+});
+
+const currentReleaseCanDeploy = computed(() => {
+  const item = currentRelease.value;
+  if (!item || !releaseIsApproved(item)) {
+    return false;
+  }
+  const deployableProjects = item.projects.filter((row) => hasDeployJobs(row));
+  if (deployableProjects.length === 0) {
+    return false;
+  }
+  return deployableProjects.every(
+    (row) =>
+      !row.sourceDirty &&
+      ["build_success", "deploy_failed", "deploy_success"].includes(row.status),
+  );
+});
+
 let messageClearTimer: number | null = null;
 
 watch(
@@ -306,12 +328,13 @@ watch(message, (value) => {
 });
 
 let releaseRefreshTimer: number | null = null;
+let releaseRefreshInFlight = false;
 
 onMounted(async () => {
   releaseRefreshTimer = window.setInterval(() => {
     void refreshCurrentRelease();
   }, 5000);
-  if (!getToken()) {
+  if (!hasSession()) {
     return;
   }
   try {
@@ -361,6 +384,7 @@ async function login() {
 }
 
 function logout() {
+  void api.logout().catch(() => undefined);
   clearToken();
   user.value = null;
   users.value = [];
@@ -385,20 +409,29 @@ async function loadData() {
   syncUserState(userResult);
   releases.value = releaseResult;
   selectedReleaseId.value = releaseResult[0]?.id ?? null;
-  if (!canManageUsers.value && activeTab.value === "users") {
+  if (!visibleTabs.value.some((tab) => tab.key === activeTab.value)) {
     activeTab.value = "apply";
   }
 }
 
 async function refreshCurrentRelease() {
-  if (activeTab.value !== "console" || loading.value || !currentRelease.value || !releaseNeedsPolling(currentRelease.value)) {
+  if (
+    releaseRefreshInFlight ||
+    activeTab.value !== "console" ||
+    loading.value ||
+    !currentRelease.value ||
+    !releaseNeedsPolling(currentRelease.value)
+  ) {
     return;
   }
+  releaseRefreshInFlight = true;
   try {
     const updated = await api.release(currentRelease.value.id);
     upsertRelease(updated);
   } catch {
     // Keep the current console usable if a transient GitLab refresh fails.
+  } finally {
+    releaseRefreshInFlight = false;
   }
 }
 
@@ -870,6 +903,21 @@ async function submitRelease() {
   });
 }
 
+function releaseIsApproved(item: Release) {
+  return Boolean(item.approverId && item.approvedAt && item.status !== "pending");
+}
+
+async function approveCurrentRelease() {
+  if (!currentRelease.value || releaseIsApproved(currentRelease.value)) {
+    return;
+  }
+  await run(async () => {
+    const updated = await api.approveRelease(currentRelease.value!.id);
+    upsertRelease(updated);
+    message.value = `${updated.batchNo} 已审批通过，可以执行打 Tag 构建`;
+  });
+}
+
 async function releaseAction(action: "tag" | "restart" | "deploy", target: ReleaseTarget = "all") {
   if (!currentRelease.value) {
     return;
@@ -885,6 +933,22 @@ async function releaseAction(action: "tag" | "restart" | "deploy", target: Relea
     upsertRelease(updated);
     message.value = `${updated.batchNo} 已更新`;
   });
+}
+
+function canRunProjectAction(row: ReleaseProject, action: "retry" | "tag" | "deploy") {
+  if (!canOperate.value || loading.value || !currentRelease.value || !releaseIsApproved(currentRelease.value)) {
+    return false;
+  }
+  if (row.status === "building" || row.status === "deploying") {
+    return false;
+  }
+  if (action === "retry") {
+    return Boolean(row.pipelineId);
+  }
+  if (action === "deploy") {
+    return hasDeployJobs(row) && !row.sourceDirty && ["build_success", "deploy_failed", "deploy_success"].includes(row.status);
+  }
+  return true;
 }
 
 function releaseProjectSourceDraft(row: ReleaseProject) {
@@ -2064,6 +2128,10 @@ function statusLabel(status: string) {
               <strong>{{ statusLabel(currentRelease.status) }}</strong>
             </div>
             <div>
+              <small>审批人</small>
+              <strong>{{ currentRelease.approver?.displayName || "-" }}</strong>
+            </div>
+            <div>
               <small>业务线</small>
               <strong>{{ currentRelease.businessLine?.name || "-" }}</strong>
             </div>
@@ -2138,18 +2206,33 @@ function statusLabel(status: string) {
           </div>
 
           <div class="actions split">
-            <button :disabled="!canOperate || loading" @click="releaseAction('tag', 'all')">全量打 Tag 构建</button>
-            <button :disabled="!canOperate || loading" @click="releaseAction('tag', 'backend')">后端打 Tag 构建</button>
-            <button :disabled="!canOperate || loading" @click="releaseAction('tag', 'frontend')">
+            <button
+              class="primary"
+              :disabled="!canOperate || loading || releaseIsApproved(currentRelease)"
+              @click="approveCurrentRelease"
+            >
+              审批通过
+            </button>
+            <button :disabled="!canOperate || loading || !currentReleaseCanBuild" @click="releaseAction('tag', 'all')">
+              全量打 Tag 构建
+            </button>
+            <button :disabled="!canOperate || loading || !currentReleaseCanBuild" @click="releaseAction('tag', 'backend')">
+              后端打 Tag 构建
+            </button>
+            <button :disabled="!canOperate || loading || !currentReleaseCanBuild" @click="releaseAction('tag', 'frontend')">
               前端打 Tag 构建
             </button>
-            <button class="danger-button" :disabled="!canOperate || loading" @click="releaseAction('restart', 'all')">
+            <button
+              class="danger-button"
+              :disabled="!canOperate || loading || !currentReleaseCanBuild"
+              @click="releaseAction('restart', 'all')"
+            >
               全量重打新 Tag 构建
             </button>
             <button
               v-if="currentReleaseHasDeployJobs"
               class="primary"
-              :disabled="!canOperate || loading"
+              :disabled="!canOperate || loading || !currentReleaseCanDeploy"
               @click="releaseAction('deploy', 'all')"
             >
               生产部署
@@ -2209,13 +2292,13 @@ function statusLabel(status: string) {
                     <span class="status" :class="row.status">{{ statusLabel(row.status) }}</span>
                   </td>
                   <td class="inline-actions">
-                    <button :disabled="!canOperate || loading || !row.pipelineId" @click="projectAction(row, 'retry')">
+                    <button :disabled="!canRunProjectAction(row, 'retry')" @click="projectAction(row, 'retry')">
                       重试原 Pipeline
                     </button>
-                    <button :disabled="!canOperate || loading" @click="projectAction(row, 'tag')">
+                    <button :disabled="!canRunProjectAction(row, 'tag')" @click="projectAction(row, 'tag')">
                       最新来源重打 Tag
                     </button>
-                    <button v-if="hasDeployJobs(row)" :disabled="!canOperate || loading" @click="projectAction(row, 'deploy')">
+                    <button v-if="hasDeployJobs(row)" :disabled="!canRunProjectAction(row, 'deploy')" @click="projectAction(row, 'deploy')">
                       部署
                     </button>
                   </td>
